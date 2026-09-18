@@ -45,7 +45,7 @@ _Avoid_: OAuth token、API key、credential、Max 訂閱
 _Avoid_: 同事、colleague、user
 
 **Built-in Tool**:
-Runtime 原生認得的工具名稱（如 Read、Write、Edit、Bash、Grep、Glob）。
+Runtime 原生自帶的工具（如 Read、Write、Edit、Bash、Grep、Glob）；本 plugin 一律停用，Runtime 只看得到 Hermes Tool。
 _Avoid_: native tool、Claude tool
 
 ### 兩側交界
@@ -58,10 +58,6 @@ _Avoid_: tool call、tool_use、function call
 Hermes 依 Tool Proposal 執行 Hermes Tool 並產生結果回填給 Runtime。
 _Avoid_: dispatch、invoke
 
-**Tool Mapping**:
-Built-in Tool 名稱與 Hermes Tool 名稱之間的雙向對照。
-_Avoid_: alias、rename、translation
-
 **Tool Bridge**:
-讓 Runtime 看得到「沒有 Built-in Tool 對應」的 Hermes Tool 的揭露機制。
-_Avoid_: MCP server、tool export
+讓 Runtime 看得到全部 Hermes Tool（含其參數 schema）的唯一揭露機制；Runtime 端的名稱帶 `mcp__hermes__` 前綴，回到 Hermes 時去掉。
+_Avoid_: MCP server、tool export、Tool Mapping
