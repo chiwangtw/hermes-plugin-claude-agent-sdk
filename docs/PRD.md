@@ -34,7 +34,7 @@ Subscriber：持有 Subscription Login（Pro 或 Max）的 Hermes Agent 使用�
 - 逾時／中斷：逾時或 Hermes 中斷時確實終止 Runtime 子程序。
 - 測試：一律真打 API（不做假 SDK），全部用 Haiku 4.5，只手動跑，發布前必跑。
 - 發布：個人 GitHub 帳號，repo 改名 `hermes-plugin-claude-agent-sdk`；v0.1 完成打 tag `v0.1.0`，`plugin.yaml` version 同步；Discord 與 #25267 連到 tag。
-- 安裝：主路徑 `hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk`，`plugin.yaml` 宣告 `python_dependencies: [claude-agent-sdk]` 讓 Hermes 自動裝進 venv；README 保留 `git clone` 到 `~/.hermes/plugins/model-providers/` 的手動路徑。不寫 install.sh。未登入時 Runtime 報錯，錯誤訊息引導 `claude login`。
+- 安裝：主路徑 `hermes plugins install https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk`，`plugin.yaml` 宣告 `python_dependencies: [claude-agent-sdk]` 讓 Hermes 自動裝進 venv；README 保留 `git clone` 到 `~/.hermes/plugins/model-providers/` 的手動路徑。不寫 install.sh。未登入時 Runtime 報錯，錯誤訊息引導 `claude login`。
 - 授權：MIT。
 - 文件語言：對外（README、ADR、UPSTREAM、註解、commit）英文；PRD、CONTEXT.md 中文。
 

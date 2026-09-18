@@ -35,7 +35,7 @@ subscription (`claude login`). Do not set `ANTHROPIC_API_KEY` in the shell that
 runs Hermes — the plugin refuses to run on an API key.
 
 ```
-hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk
+hermes plugins install https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk
 ```
 
 That clones the plugin into `~/.hermes/plugins/` and installs `claude-agent-sdk`
@@ -51,7 +51,7 @@ model-provider plugins are picked up by the provider registry directly.
 Manual alternative:
 
 ```
-git clone https://github.com/<owner>/hermes-plugin-claude-agent-sdk \
+git clone https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk \
   ~/.hermes/plugins/model-providers/claude-agent-sdk
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python claude-agent-sdk
 ```

@@ -4,7 +4,7 @@ Routes Hermes Turns through the official Claude Agent SDK so a Claude Pro/Max
 Subscription Login is billed against plan usage. The Runtime the SDK launches only makes
 Tool Proposals; Hermes executes them. See CONTEXT.md and docs/adr/0001.
 
-Install: ``hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk``
+Install: ``hermes plugins install https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk``
 (or ``git clone`` into ``$HERMES_HOME/plugins/model-providers/claude-agent-sdk``).
 """
 
