@@ -30,22 +30,23 @@ ClaudeAgentSDKClient ── claude_agent_sdk ──► Claude Code Runtime (your
 
 ## Install
 
-Prerequisites (once per person):
-
-1. Claude Code installed and logged in with your own Pro/Max subscription:
-   `claude login`. Do not set `ANTHROPIC_API_KEY` in the shell that runs Hermes.
-2. The Python SDK in Hermes' virtualenv (the SDK bundles its own Claude Code
-   binary, ~90 MB):
-
-   ```
-   uv pip install --python ~/.hermes/hermes-agent/venv/bin/python claude-agent-sdk
-   ```
-
-Plugin:
+Prerequisite, once per person: Claude Code logged in with **your own** Pro/Max
+subscription (`claude login`). Do not set `ANTHROPIC_API_KEY` in the shell that
+runs Hermes — the plugin refuses to run on an API key.
 
 ```
-git clone https://github.com/<owner>/hermes-claude-agent-sdk \
+hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk
+```
+
+That clones the plugin into `~/.hermes/plugins/` and installs `claude-agent-sdk`
+(which bundles its own Claude Code binary, ~90 MB) into Hermes' virtualenv.
+
+Manual alternative:
+
+```
+git clone https://github.com/<owner>/hermes-plugin-claude-agent-sdk \
   ~/.hermes/plugins/model-providers/claude-agent-sdk
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python claude-agent-sdk
 ```
 
 ## Selecting the provider and model
@@ -68,9 +69,10 @@ model:
   api_mode: chat_completions
 ```
 
-Models: `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`
-(auxiliary tasks — context compression, summaries, titles — default to Haiku 4.5
-and also run on your subscription).
+Models: `claude-sonnet-5` (suggested default), `claude-fable-5-1`, `claude-opus-5`,
+`claude-haiku-4-5-20251001`. Auxiliary tasks — context compression, summaries,
+titles — use Haiku 4.5 and also run on your subscription. Hermes' `--reasoning` /
+`/reasoning` levels are forwarded as the SDK effort (`none` turns thinking off).
 
 Known limitation: the provider does **not** appear in the interactive
 `hermes model` picker or in the `/model` list, and the `claude-agent-sdk:<model>`
@@ -78,12 +80,23 @@ shorthand is not recognised. Hermes core deliberately skips out-of-tree
 `external_process` providers there; see `docs/UPSTREAM.md` for the core change
 that would lift this. The `--provider` forms above are fully supported.
 
+## Tests
+
+All tests are live: they run real Turns on your own subscription (Haiku 4.5) and
+need Hermes' virtualenv so `claude_agent_sdk` and Hermes' modules resolve.
+
+```
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python pytest pyyaml
+~/.hermes/hermes-agent/venv/bin/python -m pytest tests -v
+```
+
 ## Layout
 
 ```
-plugin.yaml   # manifest (kind: model-provider)
-__init__.py   # ProviderProfile registration
+plugin.yaml   # manifest (kind: model-provider, python_dependencies)
+__init__.py   # ProviderProfile registration, effort mapping
 client.py     # OpenAI-shaped client over claude_agent_sdk
+tests/        # live tests
 CONTEXT.md    # glossary
-docs/         # PRD, handoff notes
+docs/         # PRD, ADRs, handoff notes, upstream notes
 ```

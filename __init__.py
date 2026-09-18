@@ -19,8 +19,9 @@ from .client import ClaudeAgentSDKClient, MARKER_BASE_URL
 # Curated: agentic models that support tool calling. Live listing is not available —
 # the Runtime owns auth and exposes no models endpoint.
 FALLBACK_MODELS: tuple[str, ...] = (
+    "claude-sonnet-5",  # first = suggested default (quota-friendly)
+    "claude-fable-5-1",
     "claude-opus-5",
-    "claude-sonnet-5",
     "claude-haiku-4-5-20251001",
 )
 
