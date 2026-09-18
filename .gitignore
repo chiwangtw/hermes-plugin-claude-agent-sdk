@@ -1,0 +1,5 @@
+reference/hermes-agent/
+__pycache__/
+*.pyc
+.venv/
+.env
