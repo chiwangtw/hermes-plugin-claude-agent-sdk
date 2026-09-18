@@ -25,6 +25,15 @@ FALLBACK_MODELS: tuple[str, ...] = (
 )
 
 
+# Hermes effort ladder → SDK ``effort`` vocabulary (low/medium/high/xhigh/max). ``none`` is
+# kept as-is: the client turns it into "thinking disabled".
+HERMES_EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+_EFFORT_TO_SDK: dict[str, str] = {
+    "none": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
+    "max": "max", "ultra": "max",
+}
+
+
 class ClaudeAgentSDKProfile(ProviderProfile):
     """Claude Agent SDK — external process (bundled Claude Code CLI), Subscription Login."""
 
@@ -34,6 +43,21 @@ class ClaudeAgentSDKProfile(ProviderProfile):
 
     def fetch_models(self, **_: Any) -> list[str] | None:
         return list(FALLBACK_MODELS)
+
+    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
+        """Accept the whole Hermes ladder; the mapping below clamps it for the Runtime."""
+        return HERMES_EFFORT_LADDER
+
+    def build_api_kwargs_extras(self, *, reasoning_config: dict | None = None, **context: Any) -> tuple[dict, dict]:
+        """Hermes never sends ``extra_body["reasoning"]`` to an unknown host, so the effort travels
+        as a top-level ``reasoning_effort`` kwarg that :class:`ClaudeAgentSDKClient` understands."""
+        if not isinstance(reasoning_config, dict):
+            return {}, {}
+        if reasoning_config.get("enabled") is False:
+            return {}, {"reasoning_effort": "none"}
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        sdk_effort = _EFFORT_TO_SDK.get(effort)
+        return {}, ({"reasoning_effort": sdk_effort} if sdk_effort else {})
 
 
 claude_agent_sdk = ClaudeAgentSDKProfile(

@@ -203,7 +203,7 @@ class _TurnResult:
 
 async def _run_turn_async(
     *, model: str | None, system_prompt: str, prompt_blocks: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
-    cwd: str, cli_path: str | None,
+    cwd: str, cli_path: str | None, reasoning_effort: str | None = None,
 ) -> _TurnResult:
     from claude_agent_sdk import (
         AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, StreamEvent, SystemMessage, TextBlock,
@@ -221,6 +221,10 @@ async def _run_turn_async(
         include_partial_messages=True,  # message_start/message_delta/message_stop carry usage + turn end.
         cwd=cwd,
         cli_path=cli_path,
+        # ``none`` is a Hermes level meaning "thinking off"; the SDK expresses that as a thinking
+        # config, not an effort level.
+        effort=None if reasoning_effort in (None, "", "none") else reasoning_effort,
+        thinking={"type": "disabled"} if reasoning_effort == "none" else None,
     )
 
     result = _TurnResult()
@@ -373,13 +377,14 @@ class ClaudeAgentSDKClient:
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: Any = None,
-        tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False, **_: Any,
+        tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False,
+        reasoning_effort: str | None = None, **_: Any,
     ) -> Any:
         del tool_choice  # The Runtime decides; Hermes' hint is not forwarded yet.
         system_prompt, prompt_blocks = split_messages(messages or [])
         turn = self._run_turn(
             model=model, system_prompt=system_prompt, prompt_blocks=prompt_blocks, tools=tools, cwd=self._cwd,
-            cli_path=self._cli_path, timeout_seconds=_effective_timeout(timeout))
+            cli_path=self._cli_path, reasoning_effort=reasoning_effort, timeout_seconds=_effective_timeout(timeout))
 
         usage = turn.usage
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
