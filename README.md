@@ -35,11 +35,14 @@ subscription (`claude login`). Do not set `ANTHROPIC_API_KEY` in the shell that
 runs Hermes — the plugin refuses to run on an API key.
 
 ```
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python claude-agent-sdk
 hermes plugins install https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk
 ```
 
-That clones the plugin into `~/.hermes/plugins/` and installs `claude-agent-sdk`
-(which bundles its own Claude Code binary, ~90 MB) into Hermes' virtualenv.
+The first line puts `claude-agent-sdk` (which bundles its own Claude Code binary,
+~90 MB) into Hermes' virtualenv; released Hermes (0.21.x) reports the dependency but
+does not install it for you (newer Hermes main does). The second line clones the plugin
+into `~/.hermes/plugins/`.
 
 Hermes scans every community plugin before installing and will report a
 *caution* verdict for this one: the findings are prose matches in `README.md`,
@@ -48,12 +51,11 @@ a `ps` call in the test harness). Review them, then confirm at the prompt; in a
 non-interactive shell pass `--force`. No `hermes plugins enable` step is needed —
 model-provider plugins are picked up by the provider registry directly.
 
-Manual alternative:
+Manual alternative to the second line:
 
 ```
 git clone https://github.com/chiwangtw/hermes-plugin-claude-agent-sdk \
   ~/.hermes/plugins/model-providers/claude-agent-sdk
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python claude-agent-sdk
 ```
 
 ## Selecting the provider and model
