@@ -25,4 +25,6 @@ Subscriber：持有 Subscription Login（Pro 或 Max）的 Hermes Agent 使用�
 
 ## Open questions
 
+- `hermes model` 互動選單／`/model` 列表不會顯示本 provider（core 刻意略過 out-of-tree `external_process`）。要不要送上游 PR？見 `docs/UPSTREAM.md`。
+
 - 出貨前重驗 Anthropic Help Center：Agent SDK 是否仍計入訂閱額度。

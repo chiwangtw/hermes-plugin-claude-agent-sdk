@@ -48,14 +48,35 @@ git clone https://github.com/<owner>/hermes-claude-agent-sdk \
   ~/.hermes/plugins/model-providers/claude-agent-sdk
 ```
 
-Use:
+## Selecting the provider and model
+
+Three ways, all of which go through Hermes' own model-switch pipeline:
 
 ```
+# one session
 hermes chat --provider claude-agent-sdk -m claude-sonnet-5
+
+# inside a chat, this session only / persisted to config.yaml
+/model claude-sonnet-5 --provider claude-agent-sdk
+/model claude-sonnet-5 --provider claude-agent-sdk --global
+
+# or edit ~/.hermes/config.yaml directly
+model:
+  provider: claude-agent-sdk
+  default: claude-sonnet-5
+  base_url: claude-agent-sdk://local
+  api_mode: chat_completions
 ```
 
 Models: `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`
-(auxiliary tasks default to Haiku 4.5).
+(auxiliary tasks — context compression, summaries, titles — default to Haiku 4.5
+and also run on your subscription).
+
+Known limitation: the provider does **not** appear in the interactive
+`hermes model` picker or in the `/model` list, and the `claude-agent-sdk:<model>`
+shorthand is not recognised. Hermes core deliberately skips out-of-tree
+`external_process` providers there; see `docs/UPSTREAM.md` for the core change
+that would lift this. The `--provider` forms above are fully supported.
 
 ## Layout
 
