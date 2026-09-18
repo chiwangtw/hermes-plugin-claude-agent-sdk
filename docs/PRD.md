@@ -23,6 +23,25 @@ Subscriber：持有 Subscription Login（Pro 或 Max）的 Hermes Agent 使用�
 - Hermes 副模型（context 壓縮、摘要、標題）同樣走 Runtime，預設 Haiku 4.5。
 - 以 standalone plugin 形式安裝於 `~/.hermes/plugins/model-providers/`，`git clone` 即可用，不修改 Hermes core。
 
+### v0.1 範圍（2026-09-18 grilling 定案）
+
+- 發布門檻：不等 `hermes model` 選單；`--provider`、`/model --provider [--global]`、config.yaml 三條路即可。
+- Runtime 生命週期：每個 Turn 新起一個 Runtime、整段對話重送；persistent session 留待有延遲抱怨再評估（屆時另立 ADR）。
+- 模型：`claude-fable-5-1`、`claude-opus-5`、`claude-sonnet-5`、`claude-haiku-4-5-20251001`；主模型預設 `claude-sonnet-5`；副模型 `claude-haiku-4-5-20251001`。
+- Reasoning effort：Hermes 的 `--reasoning` / `/reasoning` 等級轉發到 SDK `effort`。
+- 圖片：使用者訊息與 tool result 內的圖片都直接送進 Runtime（`supports_vision=True`）。
+- 合規守門：Runtime 會用 API key（`apiKeySource != none`）時直接拒跑並報錯，無開關。
+- 逾時／中斷：逾時或 Hermes 中斷時確實終止 Runtime 子程序。
+- 測試：一律真打 API（不做假 SDK），全部用 Haiku 4.5，只手動跑，發布前必跑。
+- 發布：個人 GitHub 帳號，repo 改名 `hermes-plugin-claude-agent-sdk`；v0.1 完成打 tag `v0.1.0`，`plugin.yaml` version 同步；Discord 與 #25267 連到 tag。
+- 上手：附 `install.sh`（<40 行：檢查 `claude` 登入、SDK 裝進 Hermes venv、clone 到 plugin 目錄），README 保留手動步驟。
+- 文件語言：對外（README、ADR、UPSTREAM、註解、commit）英文；PRD、CONTEXT.md 中文。
+
+### v0.2 以後
+
+- persistent Runtime session（視延遲抱怨）。
+- 上游 PR：讓 out-of-tree `external_process` provider 進 `hermes model` / `/model`（`docs/UPSTREAM.md`）。
+
 ## Open questions
 
 - `hermes model` 互動選單／`/model` 列表不會顯示本 provider（core 刻意略過 out-of-tree `external_process`）。要不要送上游 PR？見 `docs/UPSTREAM.md`。
