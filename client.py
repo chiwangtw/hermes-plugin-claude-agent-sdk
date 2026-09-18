@@ -16,6 +16,8 @@ Tool contract (see CONTEXT.md):
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -275,27 +277,58 @@ async def _run_turn_async(
     return result
 
 
-def _run_turn(**kwargs: Any) -> _TurnResult:
-    """Run the async Turn on a private thread/event loop (Hermes may call us from inside a loop)."""
-    import anyio
+_CANCEL_GRACE_SECONDS = 10.0
 
-    outcome: dict[str, Any] = {}
 
-    def _runner() -> None:
+class _TurnRunner:
+    """Runs one async Turn on a private thread + event loop (Hermes may call us from inside a
+    loop), and can cancel it from any thread. Cancelling the task unwinds ``async with
+    ClaudeSDKClient`` so the Runtime subprocess is disconnected and terminated."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = kwargs
+        self._loop = asyncio.new_event_loop()
+        self._task: asyncio.Task | None = None
+        self._outcome: dict[str, Any] = {}
+        self._thread = threading.Thread(target=self._runner, name="claude-agent-sdk-turn", daemon=True)
+
+    def _runner(self) -> None:
+        asyncio.set_event_loop(self._loop)
         try:
-            outcome["value"] = anyio.run(lambda: _run_turn_async(**kwargs))
+            self._task = self._loop.create_task(_run_turn_async(**self._kwargs))
+            self._outcome["value"] = self._loop.run_until_complete(self._task)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
-            outcome["error"] = exc
+            self._outcome["error"] = exc
+        finally:
+            self._loop.close()
 
+    def cancel(self) -> None:
+        """Thread-safe: ask the Turn to stop and the Runtime to go away."""
+        if self._loop.is_closed():
+            return
+
+        def _cancel() -> None:
+            if self._task is not None:
+                self._task.cancel()
+
+        with contextlib.suppress(RuntimeError):  # loop already closed between the check and the call
+            self._loop.call_soon_threadsafe(_cancel)
+
+    def run(self, timeout_seconds: float) -> _TurnResult:
+        self._thread.start()
+        self._thread.join(timeout_seconds)
+        if self._thread.is_alive():
+            self.cancel()
+            self._thread.join(_CANCEL_GRACE_SECONDS)
+            raise TimeoutError(f"claude-agent-sdk: Turn exceeded {timeout_seconds:.0f}s.")
+        if "error" in self._outcome:
+            raise self._outcome["error"]
+        return self._outcome["value"]
+
+
+def _run_turn(**kwargs: Any) -> _TurnResult:
     timeout_seconds = kwargs.pop("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)
-    worker = threading.Thread(target=_runner, name="claude-agent-sdk-turn", daemon=True)
-    worker.start()
-    worker.join(timeout_seconds)
-    if worker.is_alive():
-        raise TimeoutError(f"claude-agent-sdk: Turn exceeded {timeout_seconds:.0f}s.")
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["value"]
+    return _TurnRunner(**kwargs).run(timeout_seconds)
 
 
 # ── OpenAI-shaped client ────────────────────────────────────────────────────────────────
