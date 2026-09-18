@@ -19,3 +19,25 @@ def test_timeout_raises_and_terminates_runtime(client, no_runtime_leak):
     with pytest.raises(TimeoutError):
         client.chat.completions.create(model=TEST_MODEL, messages=LONG_TASK, timeout=3)
     assert time.monotonic() - started < 10, "timeout was not enforced promptly"
+
+
+def test_close_during_turn_stops_it_and_terminates_runtime(client, no_runtime_leak):
+    import threading
+
+    outcome: dict = {}
+
+    def _turn():
+        try:
+            outcome["value"] = client.chat.completions.create(model=TEST_MODEL, messages=LONG_TASK, timeout=60)
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_turn, daemon=True)
+    worker.start()
+    time.sleep(2.0)  # let the Runtime spawn and start generating
+    started = time.monotonic()
+    client.close()
+    worker.join(10)
+    assert not worker.is_alive(), "create() did not return after close()"
+    assert time.monotonic() - started < 10
+    assert "error" in outcome, "create() should fail once the client is closed"

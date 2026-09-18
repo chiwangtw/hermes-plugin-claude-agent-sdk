@@ -322,13 +322,11 @@ class _TurnRunner:
             self._thread.join(_CANCEL_GRACE_SECONDS)
             raise TimeoutError(f"claude-agent-sdk: Turn exceeded {timeout_seconds:.0f}s.")
         if "error" in self._outcome:
-            raise self._outcome["error"]
+            error = self._outcome["error"]
+            if isinstance(error, asyncio.CancelledError):
+                raise RuntimeError("claude-agent-sdk: Turn cancelled (client closed).") from None
+            raise error
         return self._outcome["value"]
-
-
-def _run_turn(**kwargs: Any) -> _TurnResult:
-    timeout_seconds = kwargs.pop("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)
-    return _TurnRunner(**kwargs).run(timeout_seconds)
 
 
 # ── OpenAI-shaped client ────────────────────────────────────────────────────────────────
@@ -350,9 +348,28 @@ class ClaudeAgentSDKClient:
         self._cli_path = cli_path or os.getenv("HERMES_CLAUDE_AGENT_SDK_CLI", "").strip() or None
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False
+        self._active_turns: set[_TurnRunner] = set()
+        self._active_turns_lock = threading.Lock()
 
     def close(self) -> None:
+        """Stop every in-flight Turn and its Runtime; later ``create()`` calls are refused."""
         self.is_closed = True
+        with self._active_turns_lock:
+            runners = list(self._active_turns)
+        for runner in runners:
+            runner.cancel()
+
+    def _run_turn(self, *, timeout_seconds: float, **kwargs: Any) -> _TurnResult:
+        if self.is_closed:
+            raise RuntimeError("claude-agent-sdk: client is closed.")
+        runner = _TurnRunner(**kwargs)
+        with self._active_turns_lock:
+            self._active_turns.add(runner)
+        try:
+            return runner.run(timeout_seconds)
+        finally:
+            with self._active_turns_lock:
+                self._active_turns.discard(runner)
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: Any = None,
@@ -360,7 +377,7 @@ class ClaudeAgentSDKClient:
     ) -> Any:
         del tool_choice  # The Runtime decides; Hermes' hint is not forwarded yet.
         system_prompt, prompt_blocks = split_messages(messages or [])
-        turn = _run_turn(
+        turn = self._run_turn(
             model=model, system_prompt=system_prompt, prompt_blocks=prompt_blocks, tools=tools, cwd=self._cwd,
             cli_path=self._cli_path, timeout_seconds=_effective_timeout(timeout))
 
