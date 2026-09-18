@@ -41,6 +41,13 @@ hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk
 That clones the plugin into `~/.hermes/plugins/` and installs `claude-agent-sdk`
 (which bundles its own Claude Code binary, ~90 MB) into Hermes' virtualenv.
 
+Hermes scans every community plugin before installing and will report a
+*caution* verdict for this one: the findings are prose matches in `README.md`,
+`docs/` and `tests/` (words like "git clone", "pip install", "ANTHROPIC_API_KEY",
+a `ps` call in the test harness). Review them, then confirm at the prompt; in a
+non-interactive shell pass `--force`. No `hermes plugins enable` step is needed —
+model-provider plugins are picked up by the provider registry directly.
+
 Manual alternative:
 
 ```
