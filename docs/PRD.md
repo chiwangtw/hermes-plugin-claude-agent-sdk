@@ -40,6 +40,8 @@ Subscriber：持有 Subscription Login（Pro 或 Max）的 Hermes Agent 使用�
 
 ### v0.2 以後
 
+- 審查遺留：測試夾具以 argv 子字串辨識 Runtime 程序（僅測試用）；遠端 http(s) 圖片 URL 直接轉發；未登入提示訊息無 live 測試（需登出狀態）。
+
 - persistent Runtime session（視延遲抱怨）。
 - 上游 PR：讓 out-of-tree `external_process` provider 進 `hermes model` / `/model`（`docs/UPSTREAM.md`）。
 

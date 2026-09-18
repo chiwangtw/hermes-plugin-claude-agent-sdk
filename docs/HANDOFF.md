@@ -2,8 +2,15 @@
 
 Entry point for any new session. Research snapshot 2026-09-18; status section kept current.
 
-## Status (2026-09-18, after grilling)
+## Status (2026-09-18, v0.1.0 tagged)
 
+- v0.1 slices 1-5 done: Runtime lifecycle (timeout/close), effort forwarding, vision,
+  packaging, two-axis review with fixes. 26 live tests green. Not yet done: repo rename +
+  GitHub push, Discord post, #25267 comment (Chi's actions).
+- Review leftovers deliberately not fixed (backlog): argv-substring Runtime detection in
+  the test harness (test-only); remote http(s) image URLs forwarded as-is; the
+  not-logged-in hint (`_runtime_error`) has no live test because it needs a logged-out
+  Runtime.
 - **Prototype works end to end** (`hermes chat --provider claude-agent-sdk`): Runtime proposes
   `read_file`, Hermes executes, second call answers with 94% prompt-cache hit; aux tasks
   (title generation) also run on the Runtime. Verified with the real subscription
