@@ -2,7 +2,7 @@
 Subscription Login (no fakes, by decision — see docs/PRD.md). Run with Hermes' venv python so
 ``claude_agent_sdk`` and Hermes' own modules resolve:
 
-    ~/.hermes/hermes-agent/venv/bin/python -m pytest tests -v
+    $HERMES_HOME/hermes-agent/venv/bin/python -m pytest tests -v
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-HERMES_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT") or Path.home() / ".hermes" / "hermes-agent")
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+HERMES_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT") or HERMES_HOME / "hermes-agent")
 TEST_MODEL = "claude-haiku-4-5-20251001"
 
 if str(HERMES_ROOT) not in sys.path:
@@ -24,10 +25,13 @@ if str(HERMES_ROOT) not in sys.path:
 
 
 def _load_client_module():
-    spec = importlib.util.spec_from_file_location("hermes_claude_agent_sdk_client", PLUGIN_ROOT / "client.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    name = "hermes_claude_agent_sdk_client"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, PLUGIN_ROOT / "client.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # dataclasses resolve annotations through sys.modules
+        spec.loader.exec_module(module)
+    return sys.modules[name]
 
 
 @pytest.fixture(scope="session")
@@ -41,7 +45,8 @@ def client(client_module, tmp_path):
 
 
 def runtime_processes() -> list[str]:
-    """Command lines of live Claude Code Runtime processes descended from this test process."""
+    """Command lines of live Runtime processes descended from this test process. Matching on the
+    SDK's argv is test-only: the SDK gives us no handle on the process it spawns."""
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
     rows = []
     for line in out.splitlines():
@@ -59,6 +64,17 @@ def runtime_processes() -> list[str]:
             if "claude" in cmd and "--output-format" in cmd:
                 found.append(cmd)
     return found
+
+
+def wait_for_runtime(timeout: float = 15.0) -> str:
+    """Block until a Runtime process is observed; returns its command line."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if procs := runtime_processes():
+            return procs[0]
+        time.sleep(0.05)
+    raise AssertionError("Runtime process was never observed")
 
 
 @pytest.fixture

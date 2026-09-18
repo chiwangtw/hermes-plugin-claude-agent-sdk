@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import threading
-import time
 
-from conftest import TEST_MODEL, runtime_processes
+from conftest import TEST_MODEL, wait_for_runtime
 
 SHORT = [{"role": "user", "content": "Reply with the single word: pong"}]
 
@@ -22,16 +21,10 @@ def _runtime_cmdline_during_turn(client, **create_kwargs) -> str:
 
     worker = threading.Thread(target=_turn, daemon=True)
     worker.start()
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline and "cmd" not in seen:
-        procs = runtime_processes()
-        if procs:
-            seen["cmd"] = procs[0]
-        time.sleep(0.05)
+    cmd = wait_for_runtime()
     worker.join(60)
     assert "error" not in seen, seen.get("error")
-    assert "cmd" in seen, "Runtime process was never observed"
-    return seen["cmd"]
+    return cmd
 
 
 def test_high_effort_reaches_runtime(client, no_runtime_leak):
@@ -44,3 +37,11 @@ def test_none_effort_disables_thinking(client, no_runtime_leak):
     cmd = _runtime_cmdline_during_turn(client, reasoning_effort="none")
     assert "--thinking disabled" in cmd
     assert "--effort" not in cmd
+
+
+def test_ladder_ends_via_profile_reach_runtime(client, profile, no_runtime_leak):
+    """The profile's mapping and the client's forwarding, joined end to end."""
+    _, ultra = profile.build_api_kwargs_extras(reasoning_config={"effort": "ultra"})
+    assert "--effort max" in _runtime_cmdline_during_turn(client, **ultra)
+    _, minimal = profile.build_api_kwargs_extras(reasoning_config={"effort": "minimal"})
+    assert "--effort low" in _runtime_cmdline_during_turn(client, **minimal)

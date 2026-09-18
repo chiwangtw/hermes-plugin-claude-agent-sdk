@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from conftest import TEST_MODEL
+from conftest import TEST_MODEL, wait_for_runtime
 
 LONG_TASK = [
     {"role": "system", "content": "You are a verbose writer."},
@@ -34,10 +34,17 @@ def test_close_during_turn_stops_it_and_terminates_runtime(client, no_runtime_le
 
     worker = threading.Thread(target=_turn, daemon=True)
     worker.start()
-    time.sleep(2.0)  # let the Runtime spawn and start generating
+    wait_for_runtime()
     started = time.monotonic()
     client.close()
     worker.join(10)
     assert not worker.is_alive(), "create() did not return after close()"
     assert time.monotonic() - started < 10
     assert "error" in outcome, "create() should fail once the client is closed"
+
+
+def test_client_is_reusable_after_close(client, no_runtime_leak):
+    client.close()
+    reply = client.chat.completions.create(
+        model=TEST_MODEL, messages=[{"role": "user", "content": "Reply with the single word: pong"}], timeout=60)
+    assert "pong" in (reply.choices[0].message.content or "").lower()

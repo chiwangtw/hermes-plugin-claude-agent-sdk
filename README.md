@@ -4,9 +4,9 @@ Standalone [Hermes Agent](https://github.com/NousResearch/hermes-agent) model-pr
 plugin: run Hermes on a Claude Pro/Max subscription through the official
 [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
 
-Status: **prototype** — one Hermes turn round-trips through the SDK, the Runtime
-proposes Hermes tools, Hermes executes them. See `docs/PRD.md` for scope and
-`docs/HANDOFF.md` for the research behind the design.
+Status: **v0.1** — Hermes turns round-trip through the SDK, the Runtime proposes
+Hermes tools, Hermes executes them; effort levels and images are forwarded. See
+`docs/PRD.md` for scope and `docs/HANDOFF.md` for the research behind the design.
 
 ## How it works
 
@@ -86,6 +86,16 @@ Known limitation: the provider does **not** appear in the interactive
 shorthand is not recognised. Hermes core deliberately skips out-of-tree
 `external_process` providers there; see `docs/UPSTREAM.md` for the core change
 that would lift this. The `--provider` forms above are fully supported.
+
+## Configuration knobs
+
+Provider aliases: `claude-sdk`, `claude-subscription`. Environment variables, all
+optional:
+
+- `HERMES_CLAUDE_AGENT_SDK_COMMAND` / `CLAUDE_CODE_EXECUTABLE` — where Hermes looks for
+  the `claude` binary when checking that the provider is configured.
+- `HERMES_CLAUDE_AGENT_SDK_CLI` — make the SDK drive that Claude Code binary instead of
+  the one bundled with `claude-agent-sdk`.
 
 ## Tests
 

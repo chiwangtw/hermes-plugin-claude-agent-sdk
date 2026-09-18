@@ -1,10 +1,11 @@
 """Claude Agent SDK provider profile for Hermes Agent.
 
-Routes Hermes LLM turns through the official Claude Agent SDK so a Claude Pro/Max
-Subscription Login is billed against plan usage. The SDK-launched Claude Code Runtime
-only *proposes* tool calls; Hermes executes them. See docs/HANDOFF.md and CONTEXT.md.
+Routes Hermes Turns through the official Claude Agent SDK so a Claude Pro/Max
+Subscription Login is billed against plan usage. The Runtime the SDK launches only makes
+Tool Proposals; Hermes executes them. See CONTEXT.md and docs/adr/0001.
 
-Install: ``git clone <repo> ~/.hermes/plugins/model-providers/claude-agent-sdk``.
+Install: ``hermes plugins install https://github.com/<owner>/hermes-plugin-claude-agent-sdk``
+(or ``git clone`` into ``$HERMES_HOME/plugins/model-providers/claude-agent-sdk``).
 """
 
 from __future__ import annotations
@@ -14,10 +15,10 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
-from .client import ClaudeAgentSDKClient, MARKER_BASE_URL
+from .client import ClaudeAgentSDKClient, MARKER_BASE_URL, THINKING_OFF
 
-# Curated: agentic models that support tool calling. Live listing is not available —
-# the Runtime owns auth and exposes no models endpoint.
+# Curated: agentic models that support tool calling. No live listing (the Runtime owns auth and
+# exposes no models endpoint), so Hermes falls back to this tuple.
 FALLBACK_MODELS: tuple[str, ...] = (
     "claude-sonnet-5",  # first = suggested default (quota-friendly)
     "claude-fable-5-1",
@@ -26,24 +27,21 @@ FALLBACK_MODELS: tuple[str, ...] = (
 )
 
 
-# Hermes effort ladder → SDK ``effort`` vocabulary (low/medium/high/xhigh/max). ``none`` is
-# kept as-is: the client turns it into "thinking disabled".
-HERMES_EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+# Hermes effort ladder → SDK ``effort`` vocabulary (low/medium/high/xhigh/max); THINKING_OFF
+# passes through and the client turns it into "thinking disabled".
+HERMES_EFFORT_LADDER: tuple[str, ...] = (THINKING_OFF, "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 _EFFORT_TO_SDK: dict[str, str] = {
-    "none": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
-    "max": "max", "ultra": "max",
+    THINKING_OFF: THINKING_OFF, "minimal": "low", "low": "low", "medium": "medium", "high": "high",
+    "xhigh": "xhigh", "max": "max", "ultra": "max",
 }
 
 
 class ClaudeAgentSDKProfile(ProviderProfile):
-    """Claude Agent SDK — external process (bundled Claude Code CLI), Subscription Login."""
+    """Claude Agent SDK — the Runtime is an external process under the Subscription Login."""
 
     def create_client(self, **client_kwargs: Any) -> Any:
         """Build the SDK client instead of an HTTP client."""
         return ClaudeAgentSDKClient(**client_kwargs)
-
-    def fetch_models(self, **_: Any) -> list[str] | None:
-        return list(FALLBACK_MODELS)
 
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
         """Accept the whole Hermes ladder; the mapping below clamps it for the Runtime."""
@@ -55,7 +53,7 @@ class ClaudeAgentSDKProfile(ProviderProfile):
         if not isinstance(reasoning_config, dict):
             return {}, {}
         if reasoning_config.get("enabled") is False:
-            return {}, {"reasoning_effort": "none"}
+            return {}, {"reasoning_effort": THINKING_OFF}
         effort = str(reasoning_config.get("effort") or "").strip().lower()
         sdk_effort = _EFFORT_TO_SDK.get(effort)
         return {}, ({"reasoning_effort": sdk_effort} if sdk_effort else {})
@@ -72,7 +70,7 @@ claude_agent_sdk = ClaudeAgentSDKProfile(
     base_url=MARKER_BASE_URL,
     auth_type="external_process",
     # Hermes gates external-process providers on the binary resolving. The SDK bundles its
-    # own Claude Code, but a Subscriber logs in through the official ``claude`` CLI anyway.
+    # own Runtime binary, but a Subscriber logs in through the official ``claude`` CLI anyway.
     process_command="claude",
     process_command_env_vars=("HERMES_CLAUDE_AGENT_SDK_COMMAND", "CLAUDE_CODE_EXECUTABLE"),
     supports_model_listing=False,

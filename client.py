@@ -1,11 +1,11 @@
-"""OpenAI-compatible shim that runs one Hermes Turn through the Claude Agent SDK.
+"""OpenAI-compatible Client that runs one Hermes Turn through the Claude Agent SDK.
 
-Each ``chat.completions.create()`` call starts a short-lived Claude Code Runtime via
-``claude_agent_sdk.query()``, sends the whole Hermes conversation as one prompt, and
-returns the minimal OpenAI-client shape Hermes reads (``choices[0].message.content`` /
-``.tool_calls``, ``usage``).
+Each ``chat.completions.create()`` call starts a short-lived Runtime (the Claude Code
+process the SDK launches under the Subscriber's own Subscription Login), sends the whole
+Hermes conversation as one prompt, and returns the minimal OpenAI-client shape Hermes reads
+(``choices[0].message.content`` / ``.tool_calls``, ``usage``).
 
-Tool contract (see CONTEXT.md):
+Tool contract (see CONTEXT.md and docs/adr/0001):
 - Every Hermes Tool is exposed to the Runtime through the Tool Bridge, an in-process MCP
   server named ``hermes`` (so the Runtime sees ``mcp__hermes__<name>``).
 - Runtime Built-in Tools are disabled up front (``tools=[]``), so the Runtime can only
@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -35,11 +36,13 @@ MARKER_BASE_URL = "claude-agent-sdk://local"
 MCP_SERVER_NAME = "hermes"
 MCP_TOOL_PREFIX = f"mcp__{MCP_SERVER_NAME}__"
 DENY_MESSAGE = "Tool execution is unavailable in this environment; the host executes tools."
+# Hermes effort level meaning "thinking off". The profile maps the rest of the ladder onto the
+# SDK vocabulary; this one value becomes a thinking config instead of an effort.
+THINKING_OFF = "none"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+_CANCEL_GRACE_SECONDS = 10.0
 _DATA_URL_RE = re.compile(r"^data:(?P<media>[\w/+.-]+);base64,(?P<data>.+)$", re.DOTALL)
-# Anthropic's sanctioned subscription path: the Runtime must be using the Subscription Login,
-# never an API key found in the environment (that would bill pay-per-token).
-_ALLOWED_API_KEY_SOURCES = {"none"}
+_LOGIN_HINT = "Log in to Claude Code with your subscription first: run `claude login`."
 
 _PROMPT_TRAILER = (
     "Continue the conversation from the latest message above. Historical tool calls and "
@@ -51,7 +54,9 @@ _PROMPT_TRAILER = (
 
 
 def _effective_timeout(timeout: Any) -> float:
-    """Normalise a float or httpx.Timeout-like object to wall-clock seconds (largest component wins)."""
+    """Normalise a float or httpx.Timeout-like object to wall-clock seconds (largest component
+    wins). Same rule as Hermes' ``agent/copilot_acp_client.py``, copied because that symbol is
+    private to core."""
     if isinstance(timeout, (int, float)):
         return float(timeout)
     candidates = [getattr(timeout, attr, None) for attr in ("read", "write", "connect", "pool", "timeout")]
@@ -183,14 +188,26 @@ def _build_tool_bridge(tools: list[dict[str, Any]] | None) -> Any | None:
 # ── Turn execution ──────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _TurnRequest:
+    """Everything one Turn needs, in Hermes terms."""
+
+    model: str | None
+    system_prompt: str
+    prompt_blocks: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None
+    cwd: str
+    cli_path: str | None
+    reasoning_effort: str | None  # SDK vocabulary, or THINKING_OFF
+
+
+@dataclass
 class _TurnResult:
-    def __init__(self) -> None:
-        self.text_parts: list[str] = []
-        self.thinking_parts: list[str] = []
-        self.tool_calls: list[Any] = []
-        self.usage: dict[str, Any] = {}
-        self.model: str = ""
-        self.stop_reason: str = ""
+    text_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
+    tool_calls: list[Any] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+    model: str = ""
 
     @property
     def text(self) -> str:
@@ -201,50 +218,64 @@ class _TurnResult:
         return "".join(self.thinking_parts).strip()
 
 
-async def _run_turn_async(
-    *, model: str | None, system_prompt: str, prompt_blocks: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
-    cwd: str, cli_path: str | None, reasoning_effort: str | None = None,
-) -> _TurnResult:
+def _runtime_error(detail: str) -> RuntimeError:
+    """Runtime-side failure surfaced to Hermes; authentication failures point at ``claude login``."""
+    lowered = detail.lower()
+    if any(k in lowered for k in ("authentication", "not logged in", "login", "unauthorized", "401")):
+        return RuntimeError(f"claude-agent-sdk: {detail}. {_LOGIN_HINT}")
+    return RuntimeError(f"claude-agent-sdk: {detail}")
+
+
+def _check_subscription_login(init_data: dict[str, Any]) -> None:
+    """Compliant = the Runtime authenticates with the Subscription Login and nothing else.
+    Fail closed: an unknown or missing source is refused, not assumed."""
+    source = init_data.get("apiKeySource")
+    if source == "none":
+        return
+    if source is None:
+        raise RuntimeError(
+            "claude-agent-sdk: the Runtime did not report how it authenticates; refusing to run. " + _LOGIN_HINT)
+    raise RuntimeError(
+        f"claude-agent-sdk: the Runtime would authenticate with an API key ({source}), which is billed "
+        "pay-per-token, not against the Claude subscription. Unset ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN "
+        "for Hermes, or use the built-in 'anthropic' provider instead.")
+
+
+async def _run_turn_async(request: _TurnRequest) -> _TurnResult:
     from claude_agent_sdk import (
         AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, StreamEvent, SystemMessage, TextBlock,
         ThinkingBlock, ToolUseBlock)
 
-    bridge = _build_tool_bridge(tools)
+    bridge = _build_tool_bridge(request.tools)
+    thinking_off = request.reasoning_effort == THINKING_OFF
     options = ClaudeAgentOptions(
-        model=model or None,
+        model=request.model or None,
         tools=[],  # No Runtime Built-in Tools: only Hermes Tools via the Tool Bridge.
         mcp_servers={MCP_SERVER_NAME: bridge} if bridge else {},
         permission_mode="dontAsk",  # Every Tool Proposal is denied inside the Runtime.
-        system_prompt=system_prompt,
+        system_prompt=request.system_prompt,
         setting_sources=[],  # Ignore ~/.claude settings, CLAUDE.md, hooks.
         strict_mcp_config=True,  # Ignore ~/.claude.json / .mcp.json servers.
         include_partial_messages=True,  # message_start/message_delta/message_stop carry usage + turn end.
-        cwd=cwd,
-        cli_path=cli_path,
-        # ``none`` is a Hermes level meaning "thinking off"; the SDK expresses that as a thinking
-        # config, not an effort level.
-        effort=None if reasoning_effort in (None, "", "none") else reasoning_effort,
-        thinking={"type": "disabled"} if reasoning_effort == "none" else None,
+        cwd=request.cwd,
+        cli_path=request.cli_path,
+        effort=None if thinking_off else (request.reasoning_effort or None),
+        thinking={"type": "disabled"} if thinking_off else None,
     )
+
+    async def _prompt():
+        # Streaming-input form: content blocks (text + images) rather than a bare string.
+        yield {"type": "user", "message": {"role": "user", "content": request.prompt_blocks},
+               "parent_tool_use_id": None, "session_id": "hermes"}
 
     result = _TurnResult()
     seen_tool_ids: set[str] = set()
-    async def _prompt():
-        # Streaming-input form: content blocks (text + images) rather than a bare string.
-        yield {"type": "user", "message": {"role": "user", "content": prompt_blocks},
-               "parent_tool_use_id": None, "session_id": "hermes"}
-
     async with ClaudeSDKClient(options=options) as client:
         await client.query(_prompt())
         async for message in client.receive_messages():
             if isinstance(message, SystemMessage):
                 if message.subtype == "init":
-                    source = str(message.data.get("apiKeySource") or "none")
-                    if source not in _ALLOWED_API_KEY_SOURCES:
-                        raise RuntimeError(
-                            f"claude-agent-sdk: the Runtime would authenticate with an API key ({source}), which "
-                            "is billed pay-per-token, not against the Claude subscription. Unset ANTHROPIC_API_KEY "
-                            "/ ANTHROPIC_AUTH_TOKEN for Hermes, or use the built-in 'anthropic' provider instead.")
+                    _check_subscription_login(message.data or {})
                 continue
             if isinstance(message, StreamEvent):
                 event = message.event or {}
@@ -253,15 +284,14 @@ async def _run_turn_async(
                     result.usage.update((event.get("message") or {}).get("usage") or {})
                 elif etype == "message_delta":
                     result.usage.update(event.get("usage") or {})
-                    result.stop_reason = (event.get("delta") or {}).get("stop_reason") or result.stop_reason
                 elif etype == "message_stop" and result.tool_calls:
-                    # Assistant turn ended on tool_use. Stop here, before the Runtime denies the
-                    # proposal locally and spends another API round-trip reacting to that denial.
+                    # Assistant turn ended on a Tool Proposal. Stop here, before the Runtime denies it
+                    # locally and spends another API round-trip reacting to that denial.
                     break
                 continue
             if isinstance(message, AssistantMessage):
                 if message.error:
-                    raise RuntimeError(f"claude-agent-sdk: Runtime error '{message.error}'")
+                    raise _runtime_error(f"Runtime error '{message.error}'")
                 result.model = message.model or result.model
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -276,21 +306,18 @@ async def _run_turn_async(
                 continue
             if isinstance(message, ResultMessage):
                 if message.is_error and not (result.text or result.tool_calls):
-                    raise RuntimeError(f"claude-agent-sdk: {message.result or message.subtype}")
+                    raise _runtime_error(str(message.result or message.subtype))
                 break
     return result
 
 
-_CANCEL_GRACE_SECONDS = 10.0
-
-
 class _TurnRunner:
-    """Runs one async Turn on a private thread + event loop (Hermes may call us from inside a
-    loop), and can cancel it from any thread. Cancelling the task unwinds ``async with
-    ClaudeSDKClient`` so the Runtime subprocess is disconnected and terminated."""
+    """Runs one Turn on a private thread + event loop (Hermes may call us from inside a loop), and
+    can cancel it from any thread. Cancelling the task unwinds ``async with ClaudeSDKClient`` so
+    the Runtime process is disconnected and terminated."""
 
-    def __init__(self, **kwargs: Any) -> None:
-        self._kwargs = kwargs
+    def __init__(self, request: _TurnRequest) -> None:
+        self._request = request
         self._loop = asyncio.new_event_loop()
         self._task: asyncio.Task | None = None
         self._outcome: dict[str, Any] = {}
@@ -299,12 +326,16 @@ class _TurnRunner:
     def _runner(self) -> None:
         asyncio.set_event_loop(self._loop)
         try:
-            self._task = self._loop.create_task(_run_turn_async(**self._kwargs))
+            self._task = self._loop.create_task(_run_turn_async(self._request))
             self._outcome["value"] = self._loop.run_until_complete(self._task)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             self._outcome["error"] = exc
         finally:
             self._loop.close()
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
 
     def cancel(self) -> None:
         """Thread-safe: ask the Turn to stop and the Runtime to go away."""
@@ -315,7 +346,7 @@ class _TurnRunner:
             if self._task is not None:
                 self._task.cancel()
 
-        with contextlib.suppress(RuntimeError):  # loop already closed between the check and the call
+        with contextlib.suppress(RuntimeError):  # loop closed between the check and the call
             self._loop.call_soon_threadsafe(_cancel)
 
     def run(self, timeout_seconds: float) -> _TurnResult:
@@ -324,6 +355,9 @@ class _TurnRunner:
         if self._thread.is_alive():
             self.cancel()
             self._thread.join(_CANCEL_GRACE_SECONDS)
+            if self._thread.is_alive():
+                # Left registered on the client so close() can cancel it again.
+                logger.warning("claude-agent-sdk: Runtime did not stop within %.0fs after cancel", _CANCEL_GRACE_SECONDS)
             raise TimeoutError(f"claude-agent-sdk: Turn exceeded {timeout_seconds:.0f}s.")
         if "error" in self._outcome:
             error = self._outcome["error"]
@@ -345,35 +379,38 @@ class ClaudeAgentSDKClient:
     HERMES_SKIP_ASYNC_WRAP = True
 
     def __init__(self, *, api_key: str | None = None, base_url: str | None = None, cwd: str | None = None,
-                 cli_path: str | None = None, **_: Any):
+                 cli_path: str | None = None, timeout: Any = None, **_: Any):
         self.api_key = api_key or "claude-agent-sdk"  # placeholder: the Runtime owns auth
         self.base_url = base_url or MARKER_BASE_URL
         self._cwd = str(Path(cwd or os.getcwd()).resolve())
+        # Optional: point the SDK at a specific Claude Code binary instead of its bundled one.
         self._cli_path = cli_path or os.getenv("HERMES_CLAUDE_AGENT_SDK_CLI", "").strip() or None
+        self._default_timeout = timeout
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
+        # Same semantics as Hermes' ACP client: True between Turns after close(); the next Turn resets it.
         self.is_closed = False
         self._active_turns: set[_TurnRunner] = set()
         self._active_turns_lock = threading.Lock()
 
     def close(self) -> None:
-        """Stop every in-flight Turn and its Runtime; later ``create()`` calls are refused."""
+        """Stop every in-flight Turn and its Runtime. The client stays usable for later Turns."""
         self.is_closed = True
         with self._active_turns_lock:
             runners = list(self._active_turns)
         for runner in runners:
             runner.cancel()
 
-    def _run_turn(self, *, timeout_seconds: float, **kwargs: Any) -> _TurnResult:
-        if self.is_closed:
-            raise RuntimeError("claude-agent-sdk: client is closed.")
-        runner = _TurnRunner(**kwargs)
+    def _run_turn(self, request: _TurnRequest, timeout_seconds: float) -> _TurnResult:
+        runner = _TurnRunner(request)
         with self._active_turns_lock:
             self._active_turns.add(runner)
+        self.is_closed = False
         try:
             return runner.run(timeout_seconds)
         finally:
-            with self._active_turns_lock:
-                self._active_turns.discard(runner)
+            if not runner.alive:
+                with self._active_turns_lock:
+                    self._active_turns.discard(runner)
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: Any = None,
@@ -382,9 +419,10 @@ class ClaudeAgentSDKClient:
     ) -> Any:
         del tool_choice  # The Runtime decides; Hermes' hint is not forwarded yet.
         system_prompt, prompt_blocks = split_messages(messages or [])
-        turn = self._run_turn(
+        request = _TurnRequest(
             model=model, system_prompt=system_prompt, prompt_blocks=prompt_blocks, tools=tools, cwd=self._cwd,
-            cli_path=self._cli_path, reasoning_effort=reasoning_effort, timeout_seconds=_effective_timeout(timeout))
+            cli_path=self._cli_path, reasoning_effort=reasoning_effort)
+        turn = self._run_turn(request, _effective_timeout(timeout if timeout is not None else self._default_timeout))
 
         usage = turn.usage
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
