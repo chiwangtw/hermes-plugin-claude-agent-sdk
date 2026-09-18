@@ -76,6 +76,9 @@ claude_agent_sdk = ClaudeAgentSDKProfile(
     process_command_env_vars=("HERMES_CLAUDE_AGENT_SDK_COMMAND", "CLAUDE_CODE_EXECUTABLE"),
     supports_model_listing=False,
     supports_health_check=False,
+    # Images in user messages and tool results go straight to the Runtime as image blocks.
+    supports_vision=True,
+    supports_vision_tool_messages=True,
     fallback_models=FALLBACK_MODELS,
     default_aux_model="claude-haiku-4-5-20251001",
 )
