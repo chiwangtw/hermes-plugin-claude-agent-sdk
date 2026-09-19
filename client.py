@@ -26,7 +26,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 from agent.acp_openai_bridge import build_openai_tool_call, completion_to_stream_chunks
 
@@ -314,14 +314,22 @@ async def _run_turn_async(request: _TurnRequest) -> _TurnResult:
 class _TurnRunner:
     """Runs one Turn on a private thread + event loop (Hermes may call us from inside a loop), and
     can cancel it from any thread. Cancelling the task unwinds ``async with ClaudeSDKClient`` so
-    the Runtime process is disconnected and terminated."""
+    the Runtime process is disconnected and terminated. ``on_exit`` fires on the Turn thread once
+    it is done, however it ended."""
 
-    def __init__(self, request: _TurnRequest) -> None:
+    def __init__(self, request: _TurnRequest, timeout_seconds: float,
+                 on_exit: Callable[[_TurnRunner], None] | None = None) -> None:
         self._request = request
+        self._timeout_seconds = timeout_seconds
+        self._on_exit = on_exit
         self._loop = asyncio.new_event_loop()
         self._task: asyncio.Task | None = None
         self._outcome: dict[str, Any] = {}
+        self._timed_out = False
         self._thread = threading.Thread(target=self._runner, name="claude-agent-sdk-turn", daemon=True)
+        # Armed in start(): the deadline holds even if nobody ever joins the Turn.
+        self._deadline = threading.Timer(timeout_seconds, self._on_deadline)
+        self._deadline.daemon = True
 
     def _runner(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -331,11 +339,15 @@ class _TurnRunner:
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             self._outcome["error"] = exc
         finally:
+            self._deadline.cancel()
             self._loop.close()
+            self._task = None
+            if self._on_exit is not None:
+                self._on_exit(self)
 
-    @property
-    def alive(self) -> bool:
-        return self._thread.is_alive()
+    def _on_deadline(self) -> None:
+        self._timed_out = True
+        self.cancel()
 
     def cancel(self) -> None:
         """Thread-safe: ask the Turn to stop and the Runtime to go away."""
@@ -349,22 +361,119 @@ class _TurnRunner:
         with contextlib.suppress(RuntimeError):  # loop closed between the check and the call
             self._loop.call_soon_threadsafe(_cancel)
 
-    def run(self, timeout_seconds: float) -> _TurnResult:
-        self._thread.start()
-        self._thread.join(timeout_seconds)
+    def start(self) -> None:
+        try:
+            self._thread.start()
+        except BaseException:
+            self._loop.close()
+            raise
+        self._deadline.start()
+
+    def join(self) -> _TurnResult:
+        """Wait for the Turn; past the deadline it is cancelled (the Runtime is terminated) and
+        ``TimeoutError`` is raised."""
+        self._thread.join(self._timeout_seconds + _CANCEL_GRACE_SECONDS)
         if self._thread.is_alive():
-            self.cancel()
-            self._thread.join(_CANCEL_GRACE_SECONDS)
-            if self._thread.is_alive():
-                # Left registered on the client so close() can cancel it again.
-                logger.warning("claude-agent-sdk: Runtime did not stop within %.0fs after cancel", _CANCEL_GRACE_SECONDS)
-            raise TimeoutError(f"claude-agent-sdk: Turn exceeded {timeout_seconds:.0f}s.")
+            # Stays registered on the client (until the thread exits) so close() can cancel it again.
+            logger.warning("claude-agent-sdk: Runtime did not stop within %.0fs after cancel", _CANCEL_GRACE_SECONDS)
+            self._timed_out = True
+        if self._timed_out:
+            raise TimeoutError(f"claude-agent-sdk: Turn exceeded {self._timeout_seconds:.0f}s.")
         if "error" in self._outcome:
             error = self._outcome["error"]
             if isinstance(error, asyncio.CancelledError):
                 raise RuntimeError("claude-agent-sdk: Turn cancelled (client closed).") from None
             raise error
         return self._outcome["value"]
+
+
+def _in_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+class _PendingCompletion:
+    """``create()`` result when the caller's thread has a running event loop, where sync and async
+    consumers cannot be told apart up front (Hermes' async auxiliary path awaits it; a sync caller
+    inside a loop reads it directly). The Turn is already running on its own thread; whichever
+    way the result is consumed first joins it:
+
+    - ``await`` joins on a worker thread, so the caller's loop keeps running, and yields the
+      complete response even under ``stream=True`` (Hermes' async path accepts that, and its
+      ``StreamChunks`` is sync-iterable only).
+    - Attribute access / iteration joins on the calling thread and delegates to the completion,
+      or to ``StreamChunks`` under ``stream=True``, exactly as the sync ``create()`` returns.
+
+    Consequently a Turn failure (timeout, login guard, Runtime error) surfaces at the first
+    consumption rather than from ``create()`` itself; the Turn's deadline is enforced either way."""
+
+    __slots__ = ("_join", "_cancel", "_stream", "_lock", "_outcome", "_chunks")
+
+    def __init__(self, join: Callable[[], SimpleNamespace], cancel: Callable[[], None], *, stream: bool) -> None:
+        self._join: Callable[[], SimpleNamespace] | None = join
+        self._cancel = cancel
+        self._stream = stream
+        self._lock = threading.Lock()
+        self._outcome: dict[str, Any] = {}  # "value" or "error", filled once; later reads replay it
+        self._chunks: Any = None
+
+    def _joined(self) -> SimpleNamespace:
+        with self._lock:
+            if self._join is not None:
+                try:
+                    self._outcome["value"] = self._join()
+                except BaseException as exc:  # noqa: BLE001 - replayed to every consumer
+                    self._outcome["error"] = exc
+                finally:
+                    self._join = None  # drop the runner (and the request's image payloads) once settled
+            if "error" in self._outcome:
+                raise self._outcome["error"]
+            return self._outcome["value"]
+
+    async def _awaited(self) -> SimpleNamespace:
+        try:
+            return await asyncio.to_thread(self._joined)
+        except asyncio.CancelledError:
+            self._cancel()  # the awaiting task is going away: stop the Turn and its Runtime too
+            raise
+
+    def __await__(self):
+        return self._awaited().__await__()
+
+    def _sync_value(self) -> Any:
+        completion = self._joined()
+        if not self._stream:
+            return completion
+        if self._chunks is None:
+            self._chunks = completion_to_stream_chunks(completion)
+        return self._chunks
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._sync_value(), name)
+
+    def __iter__(self):
+        return iter(self._sync_value())
+
+    def __len__(self) -> int:
+        return len(self._sync_value())
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._sync_value()[index]
+
+    def __bool__(self) -> bool:
+        return bool(self._sync_value())
+
+    @property
+    def __dict__(self) -> dict[str, Any]:  # ``vars(response)`` (generic serialisers) sees the completion
+        return vars(self._sync_value())
+
+    def __repr__(self) -> str:
+        return f"<_PendingCompletion stream={self._stream} joined={bool(self._outcome)}>"
 
 
 # ── OpenAI-shaped client ────────────────────────────────────────────────────────────────
@@ -374,7 +483,8 @@ class ClaudeAgentSDKClient:
     """Minimal OpenAI-client-compatible facade over the Claude Agent SDK."""
 
     # Declared for agent/auxiliary_client.py: complete client, never re-dispatch through a wire
-    # adapter, and safe to call as-is from async code (the Turn runs on its own thread).
+    # adapter, and ``chat.completions.create`` is awaitable from async code (Hermes then uses this
+    # client as-is on its async auxiliary path — see ``_PendingCompletion``).
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
 
@@ -400,30 +510,47 @@ class ClaudeAgentSDKClient:
         for runner in runners:
             runner.cancel()
 
-    def _run_turn(self, request: _TurnRequest, timeout_seconds: float) -> _TurnResult:
-        runner = _TurnRunner(request)
+    def _forget_turn(self, runner: _TurnRunner) -> None:
+        with self._active_turns_lock:
+            self._active_turns.discard(runner)
+
+    def _start_turn(self, request: _TurnRequest, timeout_seconds: float) -> _TurnRunner:
+        runner = _TurnRunner(request, timeout_seconds, on_exit=self._forget_turn)
         with self._active_turns_lock:
             self._active_turns.add(runner)
         self.is_closed = False
         try:
-            return runner.run(timeout_seconds)
-        finally:
-            if not runner.alive:
-                with self._active_turns_lock:
-                    self._active_turns.discard(runner)
+            runner.start()
+        except BaseException:
+            self._forget_turn(runner)
+            raise
+        return runner
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: Any = None,
         tools: list[dict[str, Any]] | None = None, tool_choice: Any = None, stream: bool = False,
         reasoning_effort: str | None = None, **_: Any,
     ) -> Any:
+        """Run one Turn. From a plain thread this blocks and returns the completion (``StreamChunks``
+        under ``stream=True``); from a thread with a running loop it returns a ``_PendingCompletion``
+        that serves both ``await create(...)`` and direct sync reads."""
         del tool_choice  # The Runtime decides; Hermes' hint is not forwarded yet.
         system_prompt, prompt_blocks = split_messages(messages or [])
         request = _TurnRequest(
             model=model, system_prompt=system_prompt, prompt_blocks=prompt_blocks, tools=tools, cwd=self._cwd,
             cli_path=self._cli_path, reasoning_effort=reasoning_effort)
-        turn = self._run_turn(request, _effective_timeout(timeout if timeout is not None else self._default_timeout))
+        runner = self._start_turn(request, _effective_timeout(timeout if timeout is not None else self._default_timeout))
 
+        def join() -> SimpleNamespace:
+            return self._to_completion(runner.join(), model)
+
+        if _in_running_loop():
+            return _PendingCompletion(join, runner.cancel, stream=stream)
+        completion = join()
+        return completion_to_stream_chunks(completion) if stream else completion
+
+    @staticmethod
+    def _to_completion(turn: _TurnResult, model: str | None) -> SimpleNamespace:
         usage = turn.usage
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
         cache_write = int(usage.get("cache_creation_input_tokens") or 0)
@@ -434,7 +561,7 @@ class ClaudeAgentSDKClient:
             content=turn.text or None, tool_calls=turn.tool_calls or None,
             reasoning=turn.thinking or None, reasoning_content=turn.thinking or None, reasoning_details=None,
         )
-        completion = SimpleNamespace(
+        return SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if turn.tool_calls else "stop")],
             usage=SimpleNamespace(
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
@@ -442,4 +569,3 @@ class ClaudeAgentSDKClient:
                 prompt_tokens_details=SimpleNamespace(cached_tokens=cache_read, cache_write_tokens=cache_write)),
             model=turn.model or model or "claude-agent-sdk",
         )
-        return completion_to_stream_chunks(completion) if stream else completion

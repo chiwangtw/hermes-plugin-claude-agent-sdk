@@ -5,8 +5,11 @@ Entry point for any new session. Research snapshot 2026-09-18; status section ke
 ## Status (2026-09-18, v0.1.0 tagged)
 
 - v0.1 slices 1-5 done: Runtime lifecycle (timeout/close), effort forwarding, vision,
-  packaging, two-axis review with fixes. 26 live tests green. Not yet done: repo rename +
+  packaging, two-axis review with fixes. 31 live tests green. Not yet done: repo rename +
   GitHub push, Discord post, #25267 comment (Chi's actions).
+- Issue #1 fixed (2026-09-19): `create()` is awaitable from a loop thread (Hermes' async
+  auxiliary path — vision_analyze, compression, session search); see `_PendingCompletion` in
+  `client.py` and `docs/UPSTREAM.md` §3 for the companion core fix.
 - Review leftovers deliberately not fixed (backlog): argv-substring Runtime detection in
   the test harness (test-only); remote http(s) image URLs forwarded as-is; the
   not-logged-in hint (`_runtime_error`) has no live test because it needs a logged-out

@@ -45,3 +45,46 @@ def test_image_in_user_message_is_seen(client, no_runtime_leak):
         {"type": "image_url", "image_url": {"url": RED_DATA_URL}}]}]
     reply = client.chat.completions.create(model=TEST_MODEL, messages=messages, timeout=60)
     assert "red" in (reply.choices[0].message.content or "").lower()
+
+
+# Hermes' async auxiliary path (vision_analyze, compression, session search) does
+# ``await client.chat.completions.create(...)`` on the same client the sync main loop uses.
+# pytest-asyncio is not in Hermes' venv, so the coroutine is driven with ``asyncio.run``.
+
+
+def test_image_in_user_message_is_seen_async(client, no_runtime_leak):
+    import asyncio
+
+    async def _ask():
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": QUESTION},
+            {"type": "image_url", "image_url": {"url": RED_DATA_URL}}]}]
+        return await client.chat.completions.create(model=TEST_MODEL, messages=messages, timeout=60)
+
+    reply = asyncio.run(_ask())
+    assert "red" in (reply.choices[0].message.content or "").lower()
+
+
+def test_await_keeps_the_event_loop_responsive(client, no_runtime_leak):
+    """The blocking Turn must run off the caller's loop: a heartbeat task keeps ticking while awaiting."""
+    import asyncio
+
+    ticks = 0
+
+    async def _heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    async def _ask():
+        beat = asyncio.create_task(_heartbeat())
+        try:
+            return await client.chat.completions.create(
+                model=TEST_MODEL, messages=[{"role": "user", "content": QUESTION}], timeout=60)
+        finally:
+            beat.cancel()
+
+    reply = asyncio.run(_ask())
+    assert reply.choices[0].message.content
+    assert ticks >= 5, "event loop was blocked while the Turn ran"
