@@ -35,6 +35,18 @@ api_mode="chat_completions")`; `/model` lists it; the colon shorthand works.
 matters for an agent CLI (relative paths in tool proposals); today the client falls back
 to `os.getcwd()`. Passing the agent's cwd would be a one-line addition to `client_kwargs`.
 
+## 3. `HERMES_SKIP_ASYNC_WRAP` is awaited unconditionally
+
+`agent/auxiliary_client.py:_to_async_client` returns a client declaring
+`HERMES_SKIP_ASYNC_WRAP` unwrapped, and `_acreate_with_progress` (~line 6665) then does
+`await client.chat.completions.create(**kwargs)`. The flag's in-tree comment reads "async-safe
+as-is", and the in-tree holder `agent/copilot_acp_client.py:CopilotACPClient` implements exactly
+that reading: a plain sync `create` — so any async auxiliary task (vision, compression, session
+search) routed through `copilot-acp` fails with `TypeError: object ... can't be used in 'await'
+expression`. This plugin sidesteps it by making `create` awaitable (issue #1 of this repo); core
+could instead tolerate a non-awaitable result (`result = client.chat.completions.create(**kwargs)`;
+`if inspect.isawaitable(result): result = await result`), which also fixes `copilot-acp`.
+
 ## Not upstream: things the plugin owns
 
 - The Tool Bridge (all Hermes tools via in-process MCP, built-ins disabled) — ADR 0001.
