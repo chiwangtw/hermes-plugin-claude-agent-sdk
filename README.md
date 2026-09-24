@@ -95,10 +95,19 @@ virtualenv:
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -P claude-agent-sdk claude-agent-sdk
 ```
 
-`-P` upgrades only the SDK. Plain `-U` would also upgrade packages Hermes pins, such as
-`pydantic` and `mcp`.
+`-P` upgrades only the SDK. The package name appears twice on purpose. Plain `-U` would
+also upgrade packages Hermes pins, such as `pydantic` and `mcp`.
 
-Or point `HERMES_CLAUDE_AGENT_SDK_CLI` at your own `claude`, which keeps itself up to date.
+From a chat app (Telegram etc.) the error gives the same fix as three steps:
+
+1. Switch to a model the old Runtime runs: `/model claude-sonnet-5 --provider claude-agent-sdk`.
+2. Send Hermes the quoted block. Hermes runs the command with its terminal tool.
+3. Send `/new`. No gateway restart is needed: the SDK picks up the new bundled binary on the
+   next Turn.
+
+Alternatively, point `HERMES_CLAUDE_AGENT_SDK_CLI` at a standalone `claude` that is new
+enough (check `claude --version`). A standalone `claude` updates itself only when it runs,
+so a copy nobody runs stays as old as the bundled one.
 
 Known limitation: the provider does **not** appear in the interactive
 `hermes model` picker or in the `/model` list, and the `claude-agent-sdk:<model>`

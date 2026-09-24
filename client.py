@@ -233,7 +233,14 @@ class RuntimeFailure(RuntimeError):
 # (400 → format_error, 404 → model_not_found: both skip the retries and go to fallback).
 _REJECTION_STATUS = {"invalid_request": 400, "model_not_found": 404}
 # The API refusing a Runtime older than the model (e.g. Claude Code 2.1.276 for claude-opus-5-5).
-_RUNTIME_TOO_OLD_RE = re.compile(r"does not support this model; version \S+ or newer is required")
+_RUNTIME_TOO_OLD_RE = re.compile(r"(?:Claude Code \S+ )?does not support this model; version \S+ or newer is required")
+# Hermes classifies "unsupported model" as model_not_found, whose lead copy ("Pick a different model
+# with /model") is the first upgrade step; the generic 400 copy points at /new instead.
+_UNSUPPORTED_MODEL = "unsupported model for this Runtime"
+# Models every Runtime this plugin supports can run: where the upgrade steps park the Subscriber.
+_UPGRADE_PARKING_MODELS = ("claude-sonnet-5", "claude-haiku-4-5-20251001")
+# Hermes shows only this many characters of the error under "Provider said:".
+_PROVIDER_SAID_LIMIT = 500
 
 
 def _runtime_error(detail: str, status_code: int | None = None) -> RuntimeFailure:
@@ -244,19 +251,34 @@ def _runtime_error(detail: str, status_code: int | None = None) -> RuntimeFailur
     return RuntimeFailure(f"claude-agent-sdk: {detail}", status_code)
 
 
-def _assistant_error(kind: str, content: list[Any], *, bundled_runtime: bool) -> RuntimeFailure:
+def _chat_upgrade_steps(model: str | None) -> str:
+    """How to upgrade the bundled Runtime from a chat app (Hermes is often reached only through one):
+    park on a model the old Runtime runs, have Hermes run the upgrade with its terminal tool, start over.
+    The command travels as one tap-to-copy block, worded so neither the Subscriber nor the model
+    "fixes" it: `-P` upgrades the SDK alone, while `-U` also moves packages Hermes pins."""
+    parking = next(m for m in _UPGRADE_PARKING_MODELS if m != model)
+    command = f"uv pip install --python {sys.executable} -P claude-agent-sdk claude-agent-sdk"
+    return (f"To fix:\n1. /model {parking} --provider claude-agent-sdk\n2. Send Hermes:\n"
+            f"```\nRun exactly, package name twice on purpose, no -U: {command}\n```\n3. /new")
+
+
+def _assistant_error(kind: str, content: list[Any], *, bundled_runtime: bool, model: str | None) -> RuntimeFailure:
     """The Runtime's synthetic error message → an error that keeps its explanation (the only place
     the Runtime says *why*) and its HTTP status."""
     from claude_agent_sdk import TextBlock
 
     text = " ".join(b.text.strip() for b in content if isinstance(b, TextBlock) and b.text.strip())
-    if bundled_runtime and (m := _RUNTIME_TOO_OLD_RE.search(text)):
-        # The Runtime's own advice (`claude update`) never reaches the copy bundled in the SDK.
-        # `-P` upgrades the SDK alone; `-U` would also move packages Hermes pins.
-        text = (f"{text[:m.end()]}. This Runtime is the one bundled with claude-agent-sdk: upgrade it in Hermes' "
-                f"Python (`uv pip install --python {sys.executable} -P claude-agent-sdk claude-agent-sdk`), "
-                "or set HERMES_CLAUDE_AGENT_SDK_CLI to a newer `claude` binary")
-    return _runtime_error(f"Runtime error '{kind}'" + (f": {text}" if text else ""), _REJECTION_STATUS.get(kind))
+    status = _REJECTION_STATUS.get(kind)
+    if not (m := _RUNTIME_TOO_OLD_RE.search(text)):
+        return _runtime_error(f"Runtime error '{kind}'" + (f": {text}" if text else ""), status)
+    if not bundled_runtime:  # the Subscriber's own `claude`: its advice (`claude update`) is the fix
+        return _runtime_error(f"{_UNSUPPORTED_MODEL}: {text[m.start():]}", status)
+    # The Runtime's own advice (`claude update`) never reaches the copy bundled in the SDK.
+    steps = _chat_upgrade_steps(model)
+    error = _runtime_error(f"{_UNSUPPORTED_MODEL}: {m.group(0)}.\n{steps}", status)
+    if len(str(error)) > _PROVIDER_SAID_LIMIT:  # a long interpreter path: the steps matter more than why
+        error = _runtime_error(f"{_UNSUPPORTED_MODEL}.\n{steps}", status)
+    return error
 
 
 def _check_subscription_login(init_data: dict[str, Any]) -> None:
@@ -324,7 +346,8 @@ async def _run_turn_async(request: _TurnRequest) -> _TurnResult:
                 continue
             if isinstance(message, AssistantMessage):
                 if message.error:
-                    raise _assistant_error(message.error, message.content, bundled_runtime=request.cli_path is None)
+                    raise _assistant_error(message.error, message.content,
+                                           bundled_runtime=request.cli_path is None, model=request.model)
                 result.model = message.model or result.model
                 for block in message.content:
                     if isinstance(block, TextBlock):
