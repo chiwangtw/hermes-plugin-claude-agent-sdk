@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
-from conftest import PLUGIN_ROOT
+from conftest import PLUGIN_ROOT, load_plugin_module
 
+FALLBACK_MODELS = load_plugin_module().FALLBACK_MODELS
 
 
 def test_curated_models_are_consistent(profile):
@@ -16,6 +18,14 @@ def test_curated_models_are_consistent(profile):
     assert profile.default_aux_model in models, "the aux model must be one the Runtime can run"
     assert "haiku" in profile.default_aux_model, "aux work should land on the cheapest tier"
     assert profile.fetch_models() is None, "no live catalog: Hermes must fall back to fallback_models"
+
+
+@pytest.mark.parametrize("model", FALLBACK_MODELS)
+def test_every_curated_model_runs_on_the_installed_runtime(client, model):
+    # A model newer than the bundled Runtime is rejected by the API (issue #3): offering it is a lie.
+    response = client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": "Reply with the single word: pong"}], timeout=120)
+    assert response.choices[0].message.content
 
 
 def test_manifest_lets_hermes_install_the_sdk():

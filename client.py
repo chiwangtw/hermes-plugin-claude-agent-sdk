@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -218,12 +219,44 @@ class _TurnResult:
         return "".join(self.thinking_parts).strip()
 
 
-def _runtime_error(detail: str) -> RuntimeError:
+class RuntimeFailure(RuntimeError):
+    """A Turn the Runtime failed or refused. ``status_code`` carries the HTTP status behind a Runtime
+    rejection: Hermes' error classifier keys on it, and without one every failure reads as a
+    transient outage that is worth retrying."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+# ``AssistantMessage.error`` kinds no retry can fix, as the HTTP status Hermes classifies on
+# (400 → format_error, 404 → model_not_found: both skip the retries and go to fallback).
+_REJECTION_STATUS = {"invalid_request": 400, "model_not_found": 404}
+# The API refusing a Runtime older than the model (e.g. Claude Code 2.1.276 for claude-opus-5-5).
+_RUNTIME_TOO_OLD_RE = re.compile(r"does not support this model; version \S+ or newer is required")
+
+
+def _runtime_error(detail: str, status_code: int | None = None) -> RuntimeFailure:
     """Runtime-side failure surfaced to Hermes; authentication failures point at ``claude login``."""
     lowered = detail.lower()
     if any(k in lowered for k in ("authentication", "not logged in", "login", "unauthorized", "401")):
-        return RuntimeError(f"claude-agent-sdk: {detail}. {_LOGIN_HINT}")
-    return RuntimeError(f"claude-agent-sdk: {detail}")
+        return RuntimeFailure(f"claude-agent-sdk: {detail}. {_LOGIN_HINT}", status_code)
+    return RuntimeFailure(f"claude-agent-sdk: {detail}", status_code)
+
+
+def _assistant_error(kind: str, content: list[Any], *, bundled_runtime: bool) -> RuntimeFailure:
+    """The Runtime's synthetic error message → an error that keeps its explanation (the only place
+    the Runtime says *why*) and its HTTP status."""
+    from claude_agent_sdk import TextBlock
+
+    text = " ".join(b.text.strip() for b in content if isinstance(b, TextBlock) and b.text.strip())
+    if bundled_runtime and (m := _RUNTIME_TOO_OLD_RE.search(text)):
+        # The Runtime's own advice (`claude update`) never reaches the copy bundled in the SDK.
+        # `-P` upgrades the SDK alone; `-U` would also move packages Hermes pins.
+        text = (f"{text[:m.end()]}. This Runtime is the one bundled with claude-agent-sdk: upgrade it in Hermes' "
+                f"Python (`uv pip install --python {sys.executable} -P claude-agent-sdk claude-agent-sdk`), "
+                "or set HERMES_CLAUDE_AGENT_SDK_CLI to a newer `claude` binary")
+    return _runtime_error(f"Runtime error '{kind}'" + (f": {text}" if text else ""), _REJECTION_STATUS.get(kind))
 
 
 def _check_subscription_login(init_data: dict[str, Any]) -> None:
@@ -291,7 +324,7 @@ async def _run_turn_async(request: _TurnRequest) -> _TurnResult:
                 continue
             if isinstance(message, AssistantMessage):
                 if message.error:
-                    raise _runtime_error(f"Runtime error '{message.error}'")
+                    raise _assistant_error(message.error, message.content, bundled_runtime=request.cli_path is None)
                 result.model = message.model or result.model
                 for block in message.content:
                     if isinstance(block, TextBlock):

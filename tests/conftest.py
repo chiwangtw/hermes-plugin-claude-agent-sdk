@@ -89,9 +89,8 @@ def no_runtime_leak():
     assert runtime_processes() == [], "Runtime process leaked after the test"
 
 
-@pytest.fixture(scope="session")
-def profile():
-    """The registered ProviderProfile, loaded the way Hermes loads a user plugin directory."""
+def load_plugin_module():
+    """The plugin package, loaded the way Hermes loads a user plugin directory."""
     name = "_hermes_user_provider_claude_agent_sdk_test"
     if name not in sys.modules:
         spec = importlib.util.spec_from_file_location(
@@ -99,4 +98,10 @@ def profile():
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
-    return sys.modules[name].claude_agent_sdk
+    return sys.modules[name]
+
+
+@pytest.fixture(scope="session")
+def profile():
+    """The registered ProviderProfile."""
+    return load_plugin_module().claude_agent_sdk

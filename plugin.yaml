@@ -5,4 +5,4 @@ description: Claude Pro/Max subscription via the official Claude Agent SDK (Runt
 author: Chi Wang
 license: MIT
 python_dependencies:
-  - "claude-agent-sdk>=0.2.156"
+  - "claude-agent-sdk>=0.2.158"

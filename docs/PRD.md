@@ -27,7 +27,7 @@ Subscriber：持有 Subscription Login（Pro 或 Max）的 Hermes Agent 使用�
 
 - 發布門檻：不等 `hermes model` 選單；`--provider`、`/model --provider [--global]`、config.yaml 三條路即可。
 - Runtime 生命週期：每個 Turn 新起一個 Runtime、整段對話重送；persistent session 留待有延遲抱怨再評估（屆時另立 ADR）。
-- 模型：`claude-fable-5-1`、`claude-opus-5`、`claude-sonnet-5`、`claude-haiku-4-5-20251001`；主模型預設 `claude-sonnet-5`；副模型 `claude-haiku-4-5-20251001`。
+- 模型：`claude-fable-5-1`、`claude-opus-5-5`、`claude-opus-5`、`claude-sonnet-5`、`claude-haiku-4-5-20251001`；主模型預設 `claude-sonnet-5`；副模型 `claude-haiku-4-5-20251001`。
 - Reasoning effort：由 profile 的 `build_api_kwargs_extras` 帶進 create() kwargs，client 轉成 SDK `effort`。對映：`none`→thinking disabled；`minimal`/`low`→`low`；`medium`→`medium`；`high`→`high`；`xhigh`→`xhigh`；`max`/`ultra`→`max`。profile 宣告 `supported_reasoning_efforts`。
 - 圖片：使用者訊息與 tool result 內的圖片都直接送進 Runtime（`supports_vision=True`）。
 - 合規守門：Runtime 會用 API key（`apiKeySource != none`）時直接拒跑並報錯，無開關。

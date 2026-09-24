@@ -78,10 +78,27 @@ model:
   api_mode: chat_completions
 ```
 
-Models: `claude-sonnet-5` (suggested default), `claude-fable-5-1`, `claude-opus-5`,
-`claude-haiku-4-5-20251001`. Auxiliary tasks — context compression, summaries,
+Models: `claude-sonnet-5` (suggested default), `claude-fable-5-1`, `claude-opus-5-5`,
+`claude-opus-5`, `claude-haiku-4-5-20251001`. Auxiliary tasks — context compression, summaries,
 titles — use Haiku 4.5 and also run on your subscription. Hermes' `--reasoning` /
 `/reasoning` levels are forwarded as the SDK effort (`none` turns thinking off).
+
+A new session starts from `model.default` in `config.yaml`: `/model … --provider` without
+`--global` only changes the current session.
+
+New models need a new Runtime. The SDK drives the Claude Code binary bundled inside
+`claude-agent-sdk`, and `claude update` does not touch that copy. When a model released
+after your SDK fails with "version X or newer is required", upgrade the SDK in Hermes'
+virtualenv:
+
+```
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -P claude-agent-sdk claude-agent-sdk
+```
+
+`-P` upgrades only the SDK. Plain `-U` would also upgrade packages Hermes pins, such as
+`pydantic` and `mcp`.
+
+Or point `HERMES_CLAUDE_AGENT_SDK_CLI` at your own `claude`, which keeps itself up to date.
 
 Known limitation: the provider does **not** appear in the interactive
 `hermes model` picker or in the `/model` list, and the `claude-agent-sdk:<model>`
