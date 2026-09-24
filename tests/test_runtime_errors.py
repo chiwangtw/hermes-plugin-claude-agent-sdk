@@ -66,3 +66,21 @@ def test_runtime_too_old_keeps_its_own_advice_for_a_standalone_claude(client_mod
     error = _too_old(client_module, bundled_runtime=False)
     assert "claude update" in str(error)
     assert "-P claude-agent-sdk" not in str(error)
+
+
+def test_a_skipped_auto_upgrade_says_why_and_keeps_the_manual_steps(client_module, monkeypatch):
+    monkeypatch.setattr(client_module.sys, "executable",
+                        r"C:\Users\user1\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe")
+    outcome = client_module.runtime_upgrade.Outcome(False, "another Turn kept its Runtime running")
+    message = str(_too_old(client_module).after_upgrade(outcome))
+    assert "Auto-upgrade: another Turn kept its Runtime running." in message
+    assert "-P claude-agent-sdk claude-agent-sdk" in message and message.rstrip().endswith("3. /new")
+    assert len(message) <= 500
+
+
+def test_an_upgrade_that_would_move_hermes_pins_is_not_offered_by_hand_either(client_module):
+    outcome = client_module.runtime_upgrade.Outcome(False, "would also change mcp", blocked_by=("mcp",))
+    error = _too_old(client_module).after_upgrade(outcome)
+    assert "update Hermes first" in str(error) and "mcp" in str(error)
+    assert "-P claude-agent-sdk" not in str(error), "the manual command would move the same pins"
+    assert _classify(error, "claude-opus-5-5").reason.value == "model_not_found"

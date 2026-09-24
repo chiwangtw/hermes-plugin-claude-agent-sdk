@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -30,6 +31,8 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from agent.acp_openai_bridge import build_openai_tool_call, completion_to_stream_chunks
+
+from . import runtime_upgrade
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +265,41 @@ def _chat_upgrade_steps(model: str | None) -> str:
             f"```\nRun exactly, package name twice on purpose, no -U: {command}\n```\n3. /new")
 
 
+class RuntimeTooOld(RuntimeFailure):
+    """The bundled Runtime is older than the requested model; upgrading claude-agent-sdk fixes it.
+    Its message is the manual fix, plus ``note`` on what the automatic upgrade did."""
+
+    def __init__(self, reason: str, model: str | None, status_code: int | None, *, sdk_version: str | None,
+                 note: str = "", blocked_by: tuple[str, ...] = ()) -> None:
+        self.reason, self.model, self.sdk_version = reason, model, sdk_version
+        self.note, self.blocked_by = note, blocked_by
+        super().__init__(self._message(), status_code)
+
+    def _message(self) -> str:
+        head = f"claude-agent-sdk: {_UNSUPPORTED_MODEL}"
+        if self.blocked_by:  # a newer SDK needs newer shared packages: upgrading it would break Hermes' pins
+            return (f"{head}: {self.reason}. A newer claude-agent-sdk also needs newer "
+                    f"{', '.join(self.blocked_by)} than Hermes pins: update Hermes first, or pick another model "
+                    "with /model.")
+        note = f" Auto-upgrade: {self.note}." if self.note else ""
+        steps = _chat_upgrade_steps(self.model)
+        # On a long interpreter path, the steps matter more than why, and why more than the note.
+        candidates = (f"{head}: {self.reason}.{note}\n{steps}", f"{head}.{note}\n{steps}", f"{head}.\n{steps}")
+        return next((c for c in candidates if len(c) <= _PROVIDER_SAID_LIMIT), candidates[-1])
+
+    def after_upgrade(self, outcome: runtime_upgrade.Outcome) -> RuntimeTooOld:
+        """The same rejection, reporting an automatic upgrade that did not happen."""
+        return RuntimeTooOld(self.reason, self.model, self.status_code, sdk_version=self.sdk_version,
+                             note=outcome.detail, blocked_by=outcome.blocked_by)
+
+
+def _installed_sdk_version() -> str | None:
+    try:
+        return importlib.metadata.version(runtime_upgrade.PACKAGE)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def _assistant_error(kind: str, content: list[Any], *, bundled_runtime: bool, model: str | None) -> RuntimeFailure:
     """The Runtime's synthetic error message → an error that keeps its explanation (the only place
     the Runtime says *why*) and its HTTP status."""
@@ -274,11 +312,7 @@ def _assistant_error(kind: str, content: list[Any], *, bundled_runtime: bool, mo
     if not bundled_runtime:  # the Subscriber's own `claude`: its advice (`claude update`) is the fix
         return _runtime_error(f"{_UNSUPPORTED_MODEL}: {text[m.start():]}", status)
     # The Runtime's own advice (`claude update`) never reaches the copy bundled in the SDK.
-    steps = _chat_upgrade_steps(model)
-    error = _runtime_error(f"{_UNSUPPORTED_MODEL}: {m.group(0)}.\n{steps}", status)
-    if len(str(error)) > _PROVIDER_SAID_LIMIT:  # a long interpreter path: the steps matter more than why
-        error = _runtime_error(f"{_UNSUPPORTED_MODEL}.\n{steps}", status)
-    return error
+    return RuntimeTooOld(m.group(0), model, status, sdk_version=_installed_sdk_version())
 
 
 def _check_subscription_login(init_data: dict[str, Any]) -> None:
@@ -325,46 +359,65 @@ async def _run_turn_async(request: _TurnRequest) -> _TurnResult:
 
     result = _TurnResult()
     seen_tool_ids: set[str] = set()
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(_prompt())
-        async for message in client.receive_messages():
-            if isinstance(message, SystemMessage):
-                if message.subtype == "init":
-                    _check_subscription_login(message.data or {})
-                continue
-            if isinstance(message, StreamEvent):
-                event = message.event or {}
-                etype = event.get("type")
-                if etype == "message_start":
-                    result.usage.update((event.get("message") or {}).get("usage") or {})
-                elif etype == "message_delta":
-                    result.usage.update(event.get("usage") or {})
-                elif etype == "message_stop" and result.tool_calls:
-                    # Assistant turn ended on a Tool Proposal. Stop here, before the Runtime denies it
-                    # locally and spends another API round-trip reacting to that denial.
+    # The slot keeps an automatic upgrade from replacing the bundled binary under a live Runtime.
+    with runtime_upgrade.runtime_slot():
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(_prompt())
+            async for message in client.receive_messages():
+                if isinstance(message, SystemMessage):
+                    if message.subtype == "init":
+                        _check_subscription_login(message.data or {})
+                    continue
+                if isinstance(message, StreamEvent):
+                    event = message.event or {}
+                    etype = event.get("type")
+                    if etype == "message_start":
+                        result.usage.update((event.get("message") or {}).get("usage") or {})
+                    elif etype == "message_delta":
+                        result.usage.update(event.get("usage") or {})
+                    elif etype == "message_stop" and result.tool_calls:
+                        # Assistant turn ended on a Tool Proposal. Stop here, before the Runtime denies it
+                        # locally and spends another API round-trip reacting to that denial.
+                        break
+                    continue
+                if isinstance(message, AssistantMessage):
+                    if message.error:
+                        raise _assistant_error(message.error, message.content,
+                                               bundled_runtime=request.cli_path is None, model=request.model)
+                    result.model = message.model or result.model
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            result.text_parts.append(block.text)
+                        elif isinstance(block, ThinkingBlock):
+                            result.thinking_parts.append(block.thinking)
+                        elif isinstance(block, ToolUseBlock) and block.id not in seen_tool_ids:
+                            seen_tool_ids.add(block.id)
+                            result.tool_calls.append(build_openai_tool_call(
+                                call_id=block.id, name=_hermes_tool_name(block.name),
+                                arguments=json.dumps(block.input or {}, ensure_ascii=False)))
+                    continue
+                if isinstance(message, ResultMessage):
+                    if message.is_error and not (result.text or result.tool_calls):
+                        raise _runtime_error(str(message.result or message.subtype))
                     break
-                continue
-            if isinstance(message, AssistantMessage):
-                if message.error:
-                    raise _assistant_error(message.error, message.content,
-                                           bundled_runtime=request.cli_path is None, model=request.model)
-                result.model = message.model or result.model
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        result.text_parts.append(block.text)
-                    elif isinstance(block, ThinkingBlock):
-                        result.thinking_parts.append(block.thinking)
-                    elif isinstance(block, ToolUseBlock) and block.id not in seen_tool_ids:
-                        seen_tool_ids.add(block.id)
-                        result.tool_calls.append(build_openai_tool_call(
-                            call_id=block.id, name=_hermes_tool_name(block.name),
-                            arguments=json.dumps(block.input or {}, ensure_ascii=False)))
-                continue
-            if isinstance(message, ResultMessage):
-                if message.is_error and not (result.text or result.tool_calls):
-                    raise _runtime_error(str(message.result or message.subtype))
-                break
     return result
+
+
+async def _run_turn(request: _TurnRequest) -> _TurnResult:
+    """One Turn. When the bundled Runtime is too old for the model, upgrade claude-agent-sdk once
+    (see ``runtime_upgrade`` for the guardrails) and run the Turn again on the new Runtime: the SDK
+    resolves its bundled binary per Turn, so no restart is needed."""
+    try:
+        return await _run_turn_async(request)
+    except RuntimeTooOld as too_old:
+        outcome = await asyncio.to_thread(runtime_upgrade.upgrade, too_old.sdk_version)
+        if not outcome.upgraded:
+            raise too_old.after_upgrade(outcome) from None
+    try:
+        return await _run_turn_async(request)
+    except RuntimeTooOld as still:
+        failed = runtime_upgrade.Outcome(False, f"upgraded to {outcome.detail}, still too old")
+        raise still.after_upgrade(failed) from None
 
 
 class _TurnRunner:
@@ -390,7 +443,7 @@ class _TurnRunner:
     def _runner(self) -> None:
         asyncio.set_event_loop(self._loop)
         try:
-            self._task = self._loop.create_task(_run_turn_async(self._request))
+            self._task = self._loop.create_task(_run_turn(self._request))
             self._outcome["value"] = self._loop.run_until_complete(self._task)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             self._outcome["error"] = exc

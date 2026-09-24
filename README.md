@@ -88,15 +88,27 @@ A new session starts from `model.default` in `config.yaml`: `/model … --provid
 
 New models need a new Runtime. The SDK drives the Claude Code binary bundled inside
 `claude-agent-sdk`, and `claude update` does not touch that copy. When a model released
-after your SDK fails with "version X or newer is required", upgrade the SDK in Hermes'
-virtualenv:
+after your SDK fails with "version X or newer is required", the plugin upgrades the SDK in
+Hermes' virtualenv by itself and runs the Turn again. No restart is needed: the SDK finds its
+bundled binary again on every Turn. It does this only when all of these hold:
+
+- A dry run shows `claude-agent-sdk` is the only installed package that would change (new
+  dependencies may be added). Anything more means Hermes' pins would move: the error then
+  says to update Hermes first.
+- No other Runtime is running: Windows locks the binary while it runs. The plugin waits up
+  to 60 s for other Turns to finish.
+- This process has not already tried to upgrade from the installed version.
+
+Turn it off with `HERMES_CLAUDE_AGENT_SDK_AUTO_UPGRADE=0`. When the automatic upgrade is off
+or does not happen, the error says why and gives the manual fix, which is:
 
 ```
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -P claude-agent-sdk claude-agent-sdk
 ```
 
 `-P` upgrades only the SDK. The package name appears twice on purpose. Plain `-U` would
-also upgrade packages Hermes pins, such as `pydantic` and `mcp`.
+also upgrade packages Hermes pins, such as `pydantic` and `mcp`. Run it outside Hermes'
+checkout: its `pyproject.toml` sets `exclude-newer = "14 days"`, which hides a fresh SDK.
 
 From a chat app (Telegram etc.) the error gives the same fix as three steps:
 
@@ -124,6 +136,9 @@ optional:
   the `claude` binary when checking that the provider is configured.
 - `HERMES_CLAUDE_AGENT_SDK_CLI` — make the SDK drive that Claude Code binary instead of
   the one bundled with `claude-agent-sdk`.
+- `HERMES_CLAUDE_AGENT_SDK_AUTO_UPGRADE` — `0` stops the plugin from upgrading
+  `claude-agent-sdk` when the bundled Runtime is too old for a model (default: on). The upgrade
+  runs `uv`, found on `PATH` or in `$HERMES_HOME/bin`.
 
 ## Tests
 
@@ -138,10 +153,11 @@ uv pip install --python ~/.hermes/hermes-agent/venv/bin/python pytest pyyaml
 ## Layout
 
 ```
-plugin.yaml   # manifest (kind: model-provider, python_dependencies)
-__init__.py   # ProviderProfile registration, effort mapping
-client.py     # OpenAI-shaped client over claude_agent_sdk
-tests/        # live tests
-CONTEXT.md    # glossary
-docs/         # PRD, ADRs, handoff notes, upstream notes
+plugin.yaml        # manifest (kind: model-provider, python_dependencies)
+__init__.py        # ProviderProfile registration, effort mapping
+client.py          # OpenAI-shaped client over claude_agent_sdk
+runtime_upgrade.py # guarded upgrade of the bundled Runtime
+tests/             # live tests
+CONTEXT.md         # glossary
+docs/              # PRD, ADRs, handoff notes, upstream notes
 ```

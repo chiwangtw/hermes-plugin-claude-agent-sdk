@@ -24,14 +24,21 @@ if str(HERMES_ROOT) not in sys.path:
     sys.path.insert(0, str(HERMES_ROOT))
 
 
-def _load_client_module():
-    name = "hermes_claude_agent_sdk_client"
+def load_plugin_module():
+    """The plugin package, loaded the way Hermes loads a user plugin directory."""
+    name = "_hermes_user_provider_claude_agent_sdk_test"
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, PLUGIN_ROOT / "client.py")
+        spec = importlib.util.spec_from_file_location(
+            name, PLUGIN_ROOT / "__init__.py", submodule_search_locations=[str(PLUGIN_ROOT)])
         module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module  # dataclasses resolve annotations through sys.modules
+        sys.modules[name] = module
         spec.loader.exec_module(module)
     return sys.modules[name]
+
+
+def _load_client_module():
+    # Through the plugin package, as Hermes loads it: client.py imports its sibling modules.
+    return sys.modules[load_plugin_module().__name__ + ".client"]
 
 
 @pytest.fixture(scope="session")
@@ -87,18 +94,6 @@ def no_runtime_leak():
     while runtime_processes() and time.time() < deadline:
         time.sleep(0.2)
     assert runtime_processes() == [], "Runtime process leaked after the test"
-
-
-def load_plugin_module():
-    """The plugin package, loaded the way Hermes loads a user plugin directory."""
-    name = "_hermes_user_provider_claude_agent_sdk_test"
-    if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(
-            name, PLUGIN_ROOT / "__init__.py", submodule_search_locations=[str(PLUGIN_ROOT)])
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-    return sys.modules[name]
 
 
 @pytest.fixture(scope="session")
