@@ -2,7 +2,7 @@
 
 Entry point for any new session. Research snapshot 2026-09-18; status section kept current.
 
-## Status (2026-09-19, v0.1.1 tagged)
+## Status (2026-09-24, v0.1.2 tagged)
 
 - v0.1 slices 1-5 done: Runtime lifecycle (timeout/close), effort forwarding, vision,
   packaging, two-axis review with fixes. 31 live tests green. Not yet done: repo rename +

@@ -1,6 +1,6 @@
 name: claude-agent-sdk
 kind: model-provider
-version: 0.1.1
+version: 0.1.2
 description: Claude Pro/Max subscription via the official Claude Agent SDK (Runtime proposes tools, Hermes executes)
 author: Chi Wang
 license: MIT
