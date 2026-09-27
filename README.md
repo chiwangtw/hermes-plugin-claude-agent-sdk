@@ -4,7 +4,78 @@ Standalone [Hermes Agent](https://github.com/NousResearch/hermes-agent) model-pr
 plugin: run Hermes on a Claude Pro/Max subscription through the official
 [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
 
-Status: **v0.1** — Hermes turns round-trip through the SDK, the Runtime proposes
+> [!WARNING]
+> **Deprecated.** This plugin is no longer maintained. Use Nous Research's official
+> [Claude Subscription DirectSDK](https://github.com/NousResearch/hermes-plugin-claude-subscription-directsdk)
+> provider instead. It does the same job (Hermes on your Claude Pro/Max subscription, Hermes
+> keeps its own tools, approvals and compaction) with a better transport and support in
+> Hermes core.
+>
+> v0.1.2 is the last release. There will be no further fixes or features, and the repository
+> will be archived. It still works on Hermes v0.21.5 (checked on 2026-09-27 against `main` @
+> `a1d2a5bd`), so existing installs keep running while you migrate.
+
+## Migrating to the official plugin
+
+What changes for you: history is replayed as real tool-use/tool-result blocks with signed
+thinking instead of one flattened transcript; text streams as it is generated; each Hermes
+call makes exactly one upstream request; 1M context windows are reported to Hermes; `hermes
+model` and `/model` list the provider with your account's own models.
+
+1. Update Hermes to 0.21.4 or newer (`hermes update`). Read the Windows notes below first if
+   your gateway runs on Windows.
+2. Install the standalone Claude Code CLI and log in: `npm install -g @anthropic-ai/claude-code`
+   (or the native installer), then `claude auth login`. This plugin ran the copy of Claude Code
+   bundled inside `claude-agent-sdk`. The official plugin runs the `claude` on your `PATH`,
+   which may be older than you expect. Check `claude --version`: Opus 5.5 needs 2.1.280 or
+   newer (`claude update`).
+3. Install the plugin:
+
+   ```
+   hermes plugins install NousResearch/hermes-plugin-claude-subscription-directsdk
+   ```
+
+   `hermes plugins install claude-subscription-directsdk` installs the version pinned in the
+   Hermes catalog instead of `main`.
+4. In `~/.hermes/config.yaml`, change the model block and delete the `base_url` line:
+
+   ```yaml
+   model:
+     provider: claude-subscription-directsdk-experimental
+     default: opus        # or sonnet / haiku / fable; the 1M routes are chosen for you
+     api_mode: chat_completions
+   ```
+
+5. Restart Hermes (or the gateway). Existing sessions pick up the new provider on their next
+   turn; if one does not, send `/new`.
+6. Leave `~/.hermes/plugins/claude-agent-sdk` in place until you are satisfied: switching
+   `model.provider` back is a one-line rollback. Then run `hermes plugins remove claude-agent-sdk`.
+
+### Windows notes from our own migration
+
+These are Hermes core behaviours on the way from 0.21.3 to 0.21.5, not bugs in either plugin.
+
+- `hermes update` stops and relaunches running gateways by itself. If your gateway is started
+  by a wrapper that puts secrets into its environment (for example a scheduled task that
+  decrypts the bot token), the relaunched gateway comes up without them. Stop the gateway
+  through your wrapper before updating, and start it the same way afterwards.
+- If the update prints `CLI exposure failed: source launcher publication failed`, the old
+  `%LOCALAPPDATA%\hermes\bin\hermes.exe` was in use and could not be removed. It then shadows
+  the new `hermes.cmd`, and Hermes reports `No module named 'pydantic_core._pydantic_core'`
+  when it loads plugins. Once nothing is running `hermes.exe`, delete it (and `hermes-acp.exe`
+  if present) so `hermes.cmd` takes over.
+- With `gateway.multiplex_profiles: true`, newer Hermes reads platform tokens and the webhook
+  secret only from each profile's `.env`, never from the process environment. A gateway that
+  gets its tokens from the environment then logs `telegram is enabled but no profile (default
+  or secondary) provided a bot credential` and skips webhook routes whose secret is missing.
+  If you have no secondary profiles, set it to `false`; otherwise move the tokens into the
+  profile's `.env`.
+
+---
+
+The rest of this README describes v0.1.2 as it was.
+
+Status: **v0.1.2, deprecated** — Hermes turns round-trip through the SDK, the Runtime proposes
 Hermes tools, Hermes executes them; effort levels and images are forwarded. See
 `docs/PRD.md` for scope and `docs/HANDOFF.md` for the research behind the design.
 
