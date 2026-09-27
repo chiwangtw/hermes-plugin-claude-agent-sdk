@@ -2,6 +2,13 @@
 
 Entry point for any new session. Research snapshot 2026-09-18; status section kept current.
 
+## Status (2026-09-27, deprecated after v0.1.2)
+
+- Superseded by NousResearch/hermes-plugin-claude-subscription-directsdk (stream-json transport,
+  structured replay, single-request admission, core support via hermes-agent #117451). No
+  further work here; README carries the migration guide. cmpc moved to the official plugin on
+  2026-09-27.
+
 ## Status (2026-09-24, v0.1.2 tagged)
 
 - v0.1 slices 1-5 done: Runtime lifecycle (timeout/close), effort forwarding, vision,
